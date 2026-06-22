@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
   if (!doc.pdf_info.empty()) {
     const auto& page = doc.pdf_info[0];
     CHECK(page.page_idx.has_value() && *page.page_idx == 0);
-    CHECK(page.para_blocks.size() == 7);
+    CHECK(page.para_blocks.size() == 8);
     CHECK(page.discarded_blocks.size() == 1);
     if (!page.para_blocks.empty()) {
       const auto& title = page.para_blocks[0];

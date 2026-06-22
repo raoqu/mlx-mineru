@@ -23,3 +23,6 @@ committed before the next begins.
 
 - **Phase 0 — core data model** ✅ `middle_json` typed model + enums + lossless JSON
   round-trip (`ctest`: `middle_json_roundtrip`).
+- **Phase 1 — output contract** ✅ `union_make` (mm/nlp markdown + content_list v1/v2),
+  faithful port of MinerU's renderer. Verified against golden output produced by the
+  real Python `union_make` (`scripts/gen_golden.py`; `ctest`: `mkcontent_golden`).

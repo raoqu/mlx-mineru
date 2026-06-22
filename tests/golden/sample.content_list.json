@@ -1,0 +1,117 @@
+[
+    {
+        "type": "text",
+        "text": "示例标题",
+        "text_level": 1,
+        "bbox": [
+            60,
+            51,
+            544,
+            76
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "公式如 $E = mc^2$ 所示，这是中文段落。",
+        "bbox": [
+            60,
+            85,
+            906,
+            136
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "text",
+        "text": "This is a long sentence that wraps across lines.",
+        "bbox": [
+            60,
+            145,
+            906,
+            196
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "equation",
+        "text": "$$\n\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}\n$$",
+        "text_format": "latex",
+        "bbox": [
+            241,
+            205,
+            725,
+            247
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "image",
+        "img_path": "images/img_0.jpg",
+        "image_caption": [
+            "图1：示意图"
+        ],
+        "image_footnote": [],
+        "content": "",
+        "bbox": [
+            60,
+            256,
+            483,
+            487
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "table",
+        "img_path": "images/tab_0.jpg",
+        "table_caption": [
+            "表1：数据"
+        ],
+        "table_footnote": [],
+        "table_body": "<table><tr><td>a</td><td>b</td></tr></table>",
+        "bbox": [
+            60,
+            504,
+            544,
+            658
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "list",
+        "sub_type": "text",
+        "list_items": [
+            "第一项内容",
+            "第二项内容"
+        ],
+        "bbox": [
+            60,
+            666,
+            544,
+            743
+        ],
+        "page_idx": 0
+    },
+    {
+        "type": "code",
+        "sub_type": "code",
+        "code_caption": [],
+        "code_body": "```python\ndef hello(): print('hi')\n```",
+        "bbox": [
+            60,
+            752,
+            906,
+            837
+        ],
+        "page_idx": 0
+    },
+    {
+        "bbox": [
+            60,
+            25,
+            241,
+            38
+        ],
+        "page_idx": 0
+    }
+]

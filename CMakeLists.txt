@@ -23,9 +23,14 @@ target_include_directories(thirdparty_headers INTERFACE
 # ---- Core library ------------------------------------------------------------
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
+  src/output/text_utils.cpp
+  src/output/mkcontent.cpp
 )
 target_include_directories(mineru_core PUBLIC
   ${CMAKE_SOURCE_DIR}/include
+)
+target_include_directories(mineru_core PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/output
 )
 target_link_libraries(mineru_core PUBLIC thirdparty_headers)
 
@@ -39,4 +44,12 @@ add_test(
   NAME middle_json_roundtrip
   COMMAND test_middle_json_roundtrip
           ${CMAKE_SOURCE_DIR}/tests/data/sample_middle.json
+)
+
+add_executable(test_mkcontent_golden tests/test_mkcontent_golden.cpp)
+target_include_directories(test_mkcontent_golden PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_mkcontent_golden PRIVATE mineru_core)
+add_test(
+  NAME mkcontent_golden
+  COMMAND test_mkcontent_golden ${CMAKE_SOURCE_DIR}/tests
 )
