@@ -26,3 +26,7 @@ committed before the next begins.
 - **Phase 1 — output contract** ✅ `union_make` (mm/nlp markdown + content_list v1/v2),
   faithful port of MinerU's renderer. Verified against golden output produced by the
   real Python `union_make` (`scripts/gen_golden.py`; `ctest`: `mkcontent_golden`).
+- **Phase 3 — PDF rasterization** ✅ pdfium-backed `PdfDocument::render_page`, faithful
+  port of MinerU's `page_to_image` (scale=dpi/72 capped to 3500px long side, ceil sizing).
+  Verified against `pypdfium2` golden — exact dimensions/scale per page (`scripts/gen_pdf_golden.py`;
+  `ctest`: `pdf_raster`). pdfium binary fetched via `scripts/fetch_pdfium.sh`.

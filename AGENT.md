@@ -71,8 +71,10 @@
 - **Phase 1 ✅**：`union_make` 输出契约（`include/mineru/mkcontent.hpp` + `src/output/mkcontent.cpp` + `text_utils.*`），忠实移植 `vlm_middle_json_mkcontent.py` 的 4 种模式（mm/nlp markdown + content_list v1/v2）及全部 helper。验证：`scripts/gen_golden.py` 用**真实 Python union_make** 生成 golden（`tests/golden/`），C++ 输出做 diff（markdown 逐字符、content_list 语义 JSON 相等），ctest `mkcontent_golden` 通过。
 - 验证基建：`scripts/build_and_test.sh` 一键 build+ctest；`scripts/gen_golden.py` 重生成 golden（需 `~/research/MinerU` + loguru + fast-langdetect）；测试用 `tests/test_util.hpp` 轻量 CHECK 宏。
 - 三方库：`third_party/nlohmann/json.hpp` 3.12.0、`third_party/CLI11/CLI11.hpp`（vendored，单头）。
-- ⚠️ **已知近似**：`text_utils.cpp` 的 `detect_lang` 用 CJK 脚本启发式替代 fast-langdetect（仅影响 CJK/西文空格分支）；golden 用语言无歧义文本，二者一致。需要更高保真时再移植 fasttext lid.176。
-- 下一步：**Phase 2 Office 后端**（docx/pptx/xlsx → middle_json，纯 zip+XML），首个端到端切片，复用 Phase 1 输出。见 PLAN.md §3。
+- **Phase 3 ✅**：PDF 栅格化（`include/mineru/pdf.hpp` + `src/io/pdf.cpp`），pdfium C API，忠实移植 `page_to_image`（scale=dpi/72，长边封顶 3500px，`ceil` 取整，RGB8）。验证：`scripts/gen_pdf_golden.py` 用真实 pypdfium2 生成 golden（`tests/golden/pdf_raster.json`），C++ 比对**逐页尺寸/scale/页面点数精确相等** + ink/亮度内容指标在跨构建容差内（pdfium 7906 vs pypdfium2 7891）。ctest `pdf_raster` 通过。
+- 三方库（二进制，gitignore，用脚本取）：`scripts/fetch_pdfium.sh`（pdfium mac-arm64）。
+- ⚠️ **已知近似**：(1) `detect_lang` 用 CJK 脚本启发式替代 fast-langdetect；(2) PDF 像素非逐字节对齐（pdfium 构建版本差异的抗锯齿），但尺寸契约精确对齐。
+- 🎯 **当前主线（用户优先级）：PDF → Markdown**。链路 = 栅格化(P3 ✅) → VLM 后端(P4，Qwen2-VL/MLX) → middle_json → union_make(P1 ✅)。下一步 **Phase 4 VLM/MLX**：参考 `third_party/reference/mlx-vlm/.../qwen2_vl` 与 `mineru-vl-utils`。需要：图像预处理、Qwen2-VL(MLX C++)、Qwen2 BPE tokenizer、两步抽取、输出语法解析、post_process、vlm_magic_model。见 PLAN.md §3 Phase 4。
 
 ## 参考样本
 `~/research/MinerU/demo/`：`pdfs/{demo1,demo2,demo3,small_ocr}.pdf`、`office_docs/{docx_01.docx,pptx_01.pptx,xlsx_01.xlsx}`——用作 golden 对比输入。

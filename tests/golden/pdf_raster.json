@@ -1,0 +1,83 @@
+{
+  "dpi": 200,
+  "max_edge": 3500,
+  "libpdfium": "151.0.7891.0",
+  "files": {
+    "demo1.pdf": {
+      "page_count": 13,
+      "pages": [
+        {
+          "page_idx": 0,
+          "width_pt": 544.0,
+          "height_pt": 743.0,
+          "scale": 2.7777777778,
+          "img_w": 1512,
+          "img_h": 2064,
+          "rgb_sha256": "0a62aad2f9b95986f2231edc2e320abed4ca97af60f65761a159d5c9a29e0327",
+          "ink_ratio": 0.052877,
+          "mean_lum": 241.4062
+        },
+        {
+          "page_idx": 1,
+          "width_pt": 544.0,
+          "height_pt": 743.0,
+          "scale": 2.7777777778,
+          "img_w": 1512,
+          "img_h": 2064,
+          "rgb_sha256": "fc9230bee53eaae65a9c15fffba045dccb3b130f9ab771372f11b95e94eb6eb5",
+          "ink_ratio": 0.067552,
+          "mean_lum": 237.3466
+        },
+        {
+          "page_idx": 2,
+          "width_pt": 544.0,
+          "height_pt": 743.0,
+          "scale": 2.7777777778,
+          "img_w": 1512,
+          "img_h": 2064,
+          "rgb_sha256": "5ae74aa4fa36d7c3102d7c567bd9c98cdb817a09e627207413e91cf7b8417c1b",
+          "ink_ratio": 0.066452,
+          "mean_lum": 237.8917
+        }
+      ]
+    },
+    "small_ocr.pdf": {
+      "page_count": 8,
+      "pages": [
+        {
+          "page_idx": 0,
+          "width_pt": 1225.5,
+          "height_pt": 1800.0,
+          "scale": 1.9444444444,
+          "img_w": 2383,
+          "img_h": 3500,
+          "rgb_sha256": "ccfff48b34a9ba2008493020918b78f0bcb06ec38bb2455704d57d37b8bb58f9",
+          "ink_ratio": 0.063665,
+          "mean_lum": 238.6912
+        },
+        {
+          "page_idx": 1,
+          "width_pt": 1225.5,
+          "height_pt": 1800.0,
+          "scale": 1.9444444444,
+          "img_w": 2383,
+          "img_h": 3500,
+          "rgb_sha256": "82cacaf90375d40067cb44651938299c1a94ca73d0b3edee920a8d33db4221c0",
+          "ink_ratio": 0.04742,
+          "mean_lum": 242.8177
+        },
+        {
+          "page_idx": 2,
+          "width_pt": 1225.5,
+          "height_pt": 1800.0,
+          "scale": 1.9444444444,
+          "img_w": 2383,
+          "img_h": 3500,
+          "rgb_sha256": "13a3750f5aad6b8aec94ed88b30f7fd08c41d7456caa37bab3f71d4c48d5a16b",
+          "ink_ratio": 0.067513,
+          "mean_lum": 237.762
+        }
+      ]
+    }
+  }
+}

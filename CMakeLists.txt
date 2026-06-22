@@ -20,6 +20,19 @@ target_include_directories(thirdparty_headers INTERFACE
   ${CMAKE_SOURCE_DIR}/third_party        # nlohmann/json.hpp, CLI11/CLI11.hpp
 )
 
+# ---- pdfium (prebuilt; fetch via scripts/fetch_pdfium.sh) --------------------
+set(PDFIUM_DIR ${CMAKE_SOURCE_DIR}/third_party/pdfium)
+if(EXISTS ${PDFIUM_DIR}/lib/libpdfium.dylib)
+  add_library(pdfium SHARED IMPORTED)
+  set_target_properties(pdfium PROPERTIES
+    IMPORTED_LOCATION ${PDFIUM_DIR}/lib/libpdfium.dylib
+    INTERFACE_INCLUDE_DIRECTORIES ${PDFIUM_DIR}/include)
+  set(HAVE_PDFIUM TRUE)
+else()
+  message(WARNING "pdfium not found at ${PDFIUM_DIR}; run scripts/fetch_pdfium.sh. PDF targets disabled.")
+  set(HAVE_PDFIUM FALSE)
+endif()
+
 # ---- Core library ------------------------------------------------------------
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
@@ -53,3 +66,21 @@ add_test(
   NAME mkcontent_golden
   COMMAND test_mkcontent_golden ${CMAKE_SOURCE_DIR}/tests
 )
+
+# ---- PDF rasterization (pdfium) ---------------------------------------------
+if(HAVE_PDFIUM)
+  add_library(mineru_pdf STATIC src/io/pdf.cpp)
+  target_include_directories(mineru_pdf PUBLIC ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(mineru_pdf PUBLIC pdfium thirdparty_headers)
+
+  add_executable(test_pdf_raster tests/test_pdf_raster.cpp)
+  target_include_directories(test_pdf_raster PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  target_link_libraries(test_pdf_raster PRIVATE mineru_pdf)
+  set_target_properties(test_pdf_raster PROPERTIES
+    BUILD_RPATH ${PDFIUM_DIR}/lib)
+  add_test(
+    NAME pdf_raster
+    COMMAND test_pdf_raster ${CMAKE_SOURCE_DIR}/tests/golden/pdf_raster.json
+            $ENV{HOME}/research/MinerU/demo/pdfs
+  )
+endif()

@@ -20,3 +20,6 @@ compile_commands.json
 
 # Reference source clones (large, own licenses) — fetch via scripts/fetch_reference.sh
 /third_party/reference/
+
+# pdfium prebuilt binary (large) — fetch via scripts/fetch_pdfium.sh
+/third_party/pdfium/
