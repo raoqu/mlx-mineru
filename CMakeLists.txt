@@ -33,6 +33,22 @@ else()
   set(HAVE_PDFIUM FALSE)
 endif()
 
+# ---- MLX (C++ library bundled in the pip `mlx` package) ----------------------
+execute_process(
+  COMMAND python3 -c "import mlx.core,os;print(os.path.dirname(mlx.core.__file__))"
+  OUTPUT_VARIABLE MLX_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE MLX_RC)
+if(MLX_RC EQUAL 0 AND EXISTS ${MLX_ROOT}/share/cmake/MLX/MLXConfig.cmake)
+  find_package(MLX CONFIG PATHS ${MLX_ROOT}/share/cmake/MLX NO_DEFAULT_PATH QUIET)
+endif()
+if(MLX_FOUND)
+  set(HAVE_MLX TRUE)
+  set(MLX_LIB_DIR ${MLX_ROOT}/lib)
+  message(STATUS "Found MLX at ${MLX_ROOT}")
+else()
+  message(WARNING "MLX not found (pip `mlx`); MLX targets disabled.")
+  set(HAVE_MLX FALSE)
+endif()
+
 # ---- Core library ------------------------------------------------------------
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
@@ -83,4 +99,13 @@ if(HAVE_PDFIUM)
     COMMAND test_pdf_raster ${CMAKE_SOURCE_DIR}/tests/golden/pdf_raster.json
             $ENV{HOME}/research/MinerU/demo/pdfs
   )
+endif()
+
+# ---- MLX smoke test ---------------------------------------------------------
+if(HAVE_MLX)
+  add_executable(test_mlx_smoke tests/test_mlx_smoke.cpp)
+  target_include_directories(test_mlx_smoke PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  target_link_libraries(test_mlx_smoke PRIVATE mlx thirdparty_headers)
+  set_target_properties(test_mlx_smoke PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
+  add_test(NAME mlx_smoke COMMAND test_mlx_smoke)
 endif()
