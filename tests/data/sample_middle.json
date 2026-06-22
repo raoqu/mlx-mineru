@@ -1,0 +1,120 @@
+{
+    "pdf_info": [
+        {
+            "page_idx": 0,
+            "page_size": [1654.0, 2339.0],
+            "para_blocks": [
+                {
+                    "type": "title",
+                    "bbox": [100, 120, 900, 180],
+                    "index": 1,
+                    "level": 1,
+                    "lines": [
+                        {
+                            "bbox": [100, 120, 900, 180],
+                            "spans": [
+                                {"type": "text", "bbox": [100, 120, 900, 180], "content": "示例标题 Sample Title"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "bbox": [100, 200, 1500, 400],
+                    "index": 2,
+                    "lines": [
+                        {
+                            "bbox": [100, 200, 1500, 260],
+                            "spans": [
+                                {"type": "text", "content": "公式如 "},
+                                {"type": "inline_equation", "content": "E = mc^2"},
+                                {"type": "text", "content": " 所示。"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "interline_equation",
+                    "bbox": [400, 420, 1200, 520],
+                    "index": 3,
+                    "lines": [
+                        {
+                            "bbox": [400, 420, 1200, 520],
+                            "spans": [
+                                {"type": "interline_equation", "content": "\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}", "image_path": "images/eq_0.jpg"}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "image",
+                    "bbox": [100, 560, 800, 1100],
+                    "index": 4,
+                    "blocks": [
+                        {
+                            "type": "image_body",
+                            "bbox": [100, 560, 800, 1000],
+                            "lines": [
+                                {"bbox": [100, 560, 800, 1000], "spans": [{"type": "image", "bbox": [100, 560, 800, 1000], "image_path": "images/img_0.jpg"}]}
+                            ]
+                        },
+                        {
+                            "type": "image_caption",
+                            "bbox": [100, 1010, 800, 1100],
+                            "lines": [
+                                {"bbox": [100, 1010, 800, 1100], "spans": [{"type": "text", "content": "图 1：示意图"}]}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "table",
+                    "bbox": [100, 1140, 900, 1500],
+                    "index": 5,
+                    "blocks": [
+                        {
+                            "type": "table_body",
+                            "bbox": [100, 1140, 900, 1460],
+                            "lines": [
+                                {"bbox": [100, 1140, 900, 1460], "spans": [{"type": "table", "bbox": [100, 1140, 900, 1460], "html": "<table><tr><td>a</td><td>b</td></tr></table>", "image_path": "images/tab_0.jpg"}]}
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "type": "list",
+                    "bbox": [100, 1520, 900, 1700],
+                    "index": 6,
+                    "sub_type": "ordered",
+                    "lines": [
+                        {"bbox": [100, 1520, 900, 1580], "spans": [{"type": "text", "content": "第一项"}]},
+                        {"bbox": [100, 1600, 900, 1660], "spans": [{"type": "text", "content": "第二项"}]}
+                    ]
+                },
+                {
+                    "type": "code",
+                    "bbox": [100, 1720, 1500, 1900],
+                    "index": 7,
+                    "sub_type": "code",
+                    "guess_lang": "python",
+                    "lines": [
+                        {"bbox": [100, 1720, 1500, 1900], "spans": [{"type": "text", "content": "print('hi')"}]}
+                    ]
+                }
+            ],
+            "discarded_blocks": [
+                {
+                    "type": "discarded",
+                    "bbox": [100, 60, 400, 90],
+                    "lines": [
+                        {"bbox": [100, 60, 400, 90], "spans": [{"type": "text", "content": "页眉文字"}]}
+                    ]
+                }
+            ],
+            "an_unknown_future_field": {"nested": [1, 2, 3], "flag": true}
+        }
+    ],
+    "_backend": "vlm",
+    "_version_name": "3.4.0",
+    "_an_unknown_top_level_field": "preserve me"
+}

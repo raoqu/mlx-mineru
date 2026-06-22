@@ -1,0 +1,19 @@
+# Build
+/build/
+*.o
+*.a
+*.dylib
+*.so
+
+# Models (downloaded at runtime, large)
+/models/*
+!/models/.gitkeep
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+compile_commands.json
+
+# Test output
+/tests/out/
