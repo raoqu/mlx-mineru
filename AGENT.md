@@ -61,7 +61,7 @@
 `POST /file_parse`（multipart：files, lang_list, backend, parse_method, formula/table_enable, return_md/middle_json/content_list/images, response_format_zip…）、`POST /tasks`、`GET /tasks/{id}`、`GET /tasks/{id}/result`、`GET /health`。响应头 `X-MinerU-Task-{Id,Status,Status-Url,Result-Url}`。
 
 ## ⚠️ 已知阻塞 / 重要风险
-- **`mineru-vl-utils` 与 `mlx-vlm` 源码不在磁盘上**（系统 Python 也未安装）。VLM 的 prompt / `batch_two_step_extract` 两步抽取 / 输出块语法解码都在 `mineru-vl-utils`。**动工 VLM(P4) 前必须先取这两个包源码对齐**。
+- ~~`mineru-vl-utils` 与 `mlx-vlm` 源码不在磁盘上~~ **已解除**：`scripts/fetch_reference.sh` → `third_party/reference/`（gitignored）。Phase 4 两步抽取契约已记入 PLAN.md §3。
 - Qwen2-VL 的 MLX C++ 实现 + Qwen2 BPE tokenizer 对齐是最大工作量与隐藏成本。
 - 输出需对 Python 逐字节对齐：CJK 空格、markdown 转义、bbox 取整、`json.dumps(ensure_ascii=False, indent=4)`。
 
