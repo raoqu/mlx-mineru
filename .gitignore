@@ -17,3 +17,6 @@ compile_commands.json
 
 # Test output
 /tests/out/
+
+# Reference source clones (large, own licenses) — fetch via scripts/fetch_reference.sh
+/third_party/reference/

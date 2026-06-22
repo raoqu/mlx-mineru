@@ -149,7 +149,15 @@ mlx-mineru/
 - **验收**：渲染页图与 Python pypdfium2 像素级一致；裁图命名与路径一致。
 
 ### Phase 4 — VLM 后端（旗舰，MLX/Metal）
-> ⚠️ **关键依赖缺口**：VLM 的提示词、`batch_two_step_extract` 两步抽取流程、输出块语法解码都在外部包 **`mineru-vl-utils`**（以及 `mlx-vlm`）中，**当前磁盘上未安装**。必须先从 PyPI/GitHub 取得这两个包的源码作为对齐基准（见 §5 风险）。
+> ✅ **阻塞已解除**：参考源码已取到（`scripts/fetch_reference.sh` → `third_party/reference/`，已 gitignore）：
+> - `mineru-vl-utils/`：VLM 客户端、两步抽取、prompts、输出语法、post_process（otsl2html、equation 修复、json2markdown）。
+> - `mlx-vlm/mlx_vlm/models/qwen2_vl/`：Qwen2-VL 的 MLX 架构（直接对照移植）。
+>
+> **两步抽取契约（来自 `mineru_client.py`）**：
+> 1. **Layout Detection**：对整页图发送 prompt `"\nLayout Detection:"`，模型输出每个块的 `bbox + type + 旋转 token`（`<|rotate_up|>`=0 / `<|rotate_right|>`=90 / `<|rotate_down|>`=180 / `<|rotate_left|>`=270），解析见 mineru_client.py:239-268。
+> 2. **Per-block 内容抽取**：按块类型选 prompt —— `table`→`"\nTable Recognition:"`、`equation`→`"\nFormula Recognition:"`、`image`/`chart`→`"\nImage Analysis:"`、其它→`"\nText Recognition:"`（`DEFAULT_PROMPTS`）。各类型有不同 `SamplingParams`（presence/frequency penalty）。
+> - system prompt = `"You are a helpful assistant."`；BlockType 见 `structs.py`（text/title/table/equation/code/algorithm/list_item/caption/footnote/header/footer/image/chart/...）。
+> - 输出还需跑 `post_process/*`（OTSL→HTML 表格、公式分隔符/括号修复、cross-page table merge 等）后才进 `vlm_magic_model` → middle_json。
 
 - **4a 模型架构**：在 MLX C++ 实现 `MinerU2.5-Pro-2605-1.2B`（Qwen2-VL 系）：
   - 视觉编码器（ViT，patchify + window attention）+ Qwen2 LLM 解码器 + 视觉-文本投影。
