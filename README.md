@@ -16,18 +16,22 @@ and working principles.
 Requires CMake ≥ 3.20 and a C++20 compiler (Apple clang). Header-only dependencies
 (`nlohmann/json`, `CLI11`) are vendored under `third_party/`.
 
-## CLI (early)
+## CLI — PDF → Markdown
 
 ```bash
-./build/mlx-mineru -p demo.pdf --page 0 -o layout.json
+./build/mlx-mineru -p demo.pdf --page 0 -o out.md      # full PDF -> Markdown
+./build/mlx-mineru -p demo.pdf --page 0 --layout-only  # just the layout (JSON)
 ```
 
-Renders a PDF page and runs the Qwen2-VL **layout-detection** step natively on
-Apple Silicon (MLX/Metal) — no Python at runtime — emitting the detected document
-structure (block types + bboxes). On a sample page it detects headers/title/body/
-footnotes in reading order. Per-block content extraction → `middle_json` → Markdown
-are the in-progress next steps (see AGENT.md). Note: generation currently uses a
-KV-cache-less path (~38s/page); a KV cache is the next optimization.
+Runs the Qwen2-VL **two-step extract** (layout detection → per-block content
+recognition) natively on Apple Silicon (MLX/Metal), **no Python at runtime**,
+assembles `middle_json`, and renders Markdown via the verified `union_make`.
+
+On a real paper page it produces a clean Markdown document — title as a heading,
+authors with inline LaTeX (`\( ^{a,c} \)`), an `# Abstract` section with inline
+equations (`\( N_{zero} \)`), and keywords — in **~9s/page** (KV-cached). Block
+association (MagicModel) and `post_process` are currently simplified vs MinerU's
+Python; captions/images/cross-page tables are the remaining fidelity work.
 
 ## Status
 

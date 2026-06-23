@@ -85,8 +85,9 @@
 - **Phase 4d-multimodal ✅**：`get_rope_index`（单图 3D 位置）+ 视觉特征拼接进 image_token 流 + 贪心生成 → ctest `vlm`：完整 预处理→视觉→合并→LLM 端到端复现 transformers 12 步贪心生成。
 - **Phase 4e-layout ✅**：版面输出解析器（`include/mineru/vlm_layout.hpp`+`src/vlm/vlm_layout.cpp`），`<|box_start|>…<|ref_*|>…` 文法 + bbox 0..1000→[0,1] + 表内块过滤，对齐 mineru-vl-utils → ctest `layout`。
 - 🎯 **PDF→Markdown 进度**：栅格化(P3 ✅)→图像预处理(4c ✅)→Qwen2-VL 全模型 MLX C++(LLM✅/视觉✅/多模态✅，均已验证)→版面解析(4e-layout ✅)→[**剩余**：两步抽取编排+KV cache、每块内容抽取、post_process、MagicModel→middle_json、CLI]→union_make(P1 ✅)。
-- **CLI ✅（初版）**：`src/cli/main.cpp` → `build/mlx-mineru`。`-p PDF --page N` 渲染页→resize 1036²→预处理→视觉塔→layout chat prompt→生成→`parse_layout_output`→输出 layout JSON。**实测 demo1.pdf p0：38.3s 检出 18 个块**（header/title/text/page_footnote，阅读序合理）。全程零 Python。
-- **下一步**：(1) **KV cache**（当前 KV-less 逐步重算，~38s/页；真实页 ~1369 图像 token，加 cache 可大幅提速）；(2) 两步抽取 step2：每块按 bbox 裁剪 + 按类型 prompt（Table/Formula/Image/Text Recognition）抽内容；(3) `post_process/*`（otsl2html、公式修复等）；(4) MagicModel(`vlm_magic_model.py` 856 行)→ middle_json(para_blocks)；(5) union_make→.md 写盘 + `--server`。字节级对齐需可跑 MinerU Python VLM。
+- **CLI ✅ PDF→Markdown 端到端跑通**：`src/cli/main.cpp` → `build/mlx-mineru`。`-p PDF --page N -o out.md`：渲染→layout 检测→**逐块裁剪+按类型 prompt 抽内容（两步抽取 step2）**→组装 middle_json→`union_make`→Markdown。`--layout-only` 仅输出版面 JSON。**实测 demo1.pdf p0：~9s 产出高质量 Markdown**（标题成 #、作者带行内 LaTeX 上标、`# Abstract`、含行内公式的摘要、Keywords）。零 Python。
+- **KV cache ✅**：`forward_cached`/`generate_cached`（prefill+逐 token 解码），layout 由 38.3s→3.2s（~12×），输出一致。
+- **剩余保真工作（非阻塞，已可用）**：(1) MagicModel(`vlm_magic_model.py` 856 行) 完整块归类/caption 关联/span 截图（当前简化：header/footer/page_number/page_footnote/aside→discarded，其余按主类型）；(2) `post_process/*`（otsl2html 表格、公式修复、cross-page table）；(3) image/chart 存图+image_path；(4) 多页/批处理、`--server` HTTP API、`content_list` 输出；(5) 与 MinerU Python 逐字节对齐（需可跑其 VLM）。
 
 ## 参考样本
 `~/research/MinerU/demo/`：`pdfs/{demo1,demo2,demo3,small_ocr}.pdf`、`office_docs/{docx_01.docx,pptx_01.pptx,xlsx_01.xlsx}`——用作 golden 对比输入。
