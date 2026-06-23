@@ -104,6 +104,7 @@ endif()
 # ---- VLM support lib (tokenizer; grows into the Qwen2-VL backend) ------------
 add_library(mineru_vlm STATIC
   src/vlm/tokenizer.cpp
+  src/vlm/image_preprocess.cpp
 )
 target_include_directories(mineru_vlm
   PUBLIC ${CMAKE_SOURCE_DIR}/include
@@ -116,6 +117,11 @@ target_link_libraries(test_tokenizer PRIVATE mineru_vlm)
 add_test(NAME tokenizer
   COMMAND test_tokenizer ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer
           ${CMAKE_SOURCE_DIR}/tests/golden/tokenizer.json)
+
+add_executable(test_preprocess tests/test_preprocess.cpp)
+target_include_directories(test_preprocess PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_preprocess PRIVATE mineru_vlm)
+add_test(NAME preprocess COMMAND test_preprocess ${CMAKE_SOURCE_DIR}/tests/golden)
 
 # ---- MLX smoke test ---------------------------------------------------------
 if(HAVE_MLX)
