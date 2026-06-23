@@ -29,6 +29,7 @@ done
 
 # --- dependencies (gitignored; fetched on demand) ---
 ./scripts/fetch_pdfium.sh    || echo "WARN: pdfium fetch failed; PDF targets will be skipped"
+./scripts/fetch_mlx.sh       || echo "WARN: MLX vendoring failed; build will fall back to the pip mlx path"
 ./scripts/fetch_tokenizer.sh || echo "WARN: tokenizer fetch failed; tokenizer test will fail"
 if [ "$FETCH_WEIGHTS" = "1" ]; then
   ./scripts/fetch_weights.sh

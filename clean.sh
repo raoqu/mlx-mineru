@@ -24,8 +24,8 @@ rm -rf build output
 echo "removed build/ and output/"
 
 if [ "$DEPS" = "1" ]; then
-  rm -rf third_party/pdfium third_party/reference
-  echo "removed third_party/pdfium and third_party/reference (re-fetch with build.sh / scripts/fetch_reference.sh)"
+  rm -rf third_party/pdfium third_party/mlx third_party/reference
+  echo "removed third_party/{pdfium,mlx,reference} (re-fetch with build.sh / scripts/fetch_reference.sh)"
 fi
 
 if [ "$ALL" = "1" ]; then

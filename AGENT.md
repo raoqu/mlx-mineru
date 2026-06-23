@@ -11,7 +11,7 @@
 2. **中间表示即契约**：`middle_json` 贯穿全流程，保持**字段级兼容**。所有后端产出它，所有输出由它生成。
 3. **垂直切片**：先打通端到端（Office 最简、无 ML），再加 ML 后端；每阶段对 Python 输出做 **golden diff** 验收。
 4. **MLX/Metal**：张量计算走 MLX C++（mlx 本身是 C++ 库）；热点必要时写 Metal kernel。
-5. **零 Python**：最终二进制不依赖 Python 解释器或 `.py`。
+5. **零 Python**：最终二进制不依赖 Python 解释器或 `.py`。✅ 已核验：`mlx-mineru` 不链接 libpython、运行时不调用 python/`.py`；所有非系统 dylib（libmlx/libjaccl/libpdfium）均从仓库内 `third_party/` 加载（`scripts/fetch_mlx.sh` 把 libmlx.dylib+libjaccl.dylib+mlx.metallib 从 pip mlx 复制进 `third_party/mlx/`，rpath 指向仓库，不再引用 site-packages）。Python 仅用于**构建/测试时**（CMake 定位/golden 生成）。
 6. 改代码前先更新/参照 PLAN.md 的阶段；新发现的契约细节回写本文件或 PLAN.md。
 7. **每个环节可验证**：每一步（不只每阶段）都必须有可执行的验证手段——能编译、能跑测试、能对 golden 做 diff。没有验证方式的改动不算完成。验证方式与结果要可复现（写进 `tests/` 或在提交信息里说明如何复跑）。
 8. **每阶段提交 Git**：完成一个阶段（或一个可独立验证的子环节）后，立即 `git commit`，提交信息写清"做了什么 + 如何验证 + 验证结果"，使进度可追溯、可回滚。绝不在未验证通过时提交。

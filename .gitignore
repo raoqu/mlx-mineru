@@ -26,3 +26,6 @@ compile_commands.json
 
 # CLI output
 /output/
+
+# Vendored MLX runtime (large) — fetch via scripts/fetch_mlx.sh
+/third_party/mlx/

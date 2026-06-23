@@ -44,6 +44,27 @@ if(MLX_FOUND)
   set(HAVE_MLX TRUE)
   set(MLX_LIB_DIR ${MLX_ROOT}/lib)
   message(STATUS "Found MLX at ${MLX_ROOT}")
+
+  # Prefer the vendored MLX runtime (scripts/fetch_mlx.sh) so the binary loads
+  # libmlx.dylib + mlx.metallib from the repo, not from a Python site-packages
+  # tree. We keep the official MLXConfig for the framework/flag interface but
+  # repoint the dylib location (-> rpath) and headers to third_party/mlx/.
+  set(VENDORED_MLX ${CMAKE_SOURCE_DIR}/third_party/mlx)
+  if(EXISTS ${VENDORED_MLX}/lib/libmlx.dylib)
+    # Override the generic AND per-config imported locations so linking and the
+    # auto-generated rpath both point at the vendored dylib (not site-packages).
+    set_target_properties(mlx PROPERTIES
+      IMPORTED_LOCATION ${VENDORED_MLX}/lib/libmlx.dylib
+      IMPORTED_LOCATION_RELEASE ${VENDORED_MLX}/lib/libmlx.dylib
+      IMPORTED_LOCATION_DEBUG ${VENDORED_MLX}/lib/libmlx.dylib
+      IMPORTED_LOCATION_RELWITHDEBINFO ${VENDORED_MLX}/lib/libmlx.dylib
+      IMPORTED_LOCATION_MINSIZEREL ${VENDORED_MLX}/lib/libmlx.dylib)
+    if(EXISTS ${VENDORED_MLX}/include/mlx/mlx.h)
+      set_target_properties(mlx PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${VENDORED_MLX}/include)
+    endif()
+    set(MLX_LIB_DIR ${VENDORED_MLX}/lib)
+    message(STATUS "Runtime MLX vendored at ${MLX_LIB_DIR} (decoupled from site-packages)")
+  endif()
 else()
   message(WARNING "MLX not found (pip `mlx`); MLX targets disabled.")
   set(HAVE_MLX FALSE)
