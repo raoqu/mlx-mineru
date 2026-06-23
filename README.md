@@ -10,11 +10,17 @@ and working principles.
 ## Build & test
 
 ```bash
-./scripts/build_and_test.sh
+./build.sh             # fetch deps + configure + build (Release)
+./build.sh --test      # build, then run the test suite
+./build.sh --weights   # also fetch the ~2.2GB model weights
+./clean.sh             # remove build/ and output/   (--deps / --all for more)
 ```
 
-Requires CMake ≥ 3.20 and a C++20 compiler (Apple clang). Header-only dependencies
-(`nlohmann/json`, `CLI11`) are vendored under `third_party/`.
+Requires CMake ≥ 3.20, a C++20 compiler (Apple clang), and the pip `mlx` package
+(provides the MLX C++ library). Header-only deps (`nlohmann/json`, `CLI11`,
+`cpp-httplib`, `stb`) are vendored under `third_party/`; the pdfium binary, tokenizer,
+and model weights are fetched on demand (gitignored). `./scripts/build_and_test.sh`
+is the equivalent one-shot build+test entry point.
 
 ## CLI — PDF → Markdown
 
