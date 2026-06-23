@@ -75,14 +75,17 @@ static std::vector<uint8_t> resize_by_need(std::vector<uint8_t> rgb, int& w, int
 // Run the VLM on one cropped block image with a type-specific instruction.
 static std::string extract_content(const mineru::Qwen2VLModel& model,
                                    const mineru::Qwen2Tokenizer& tok, std::vector<uint8_t> rgb,
-                                   int w, int h, const std::string& instruction, int max_new) {
+                                   int w, int h, const std::string& instruction, int max_new,
+                                   bool keep_special = false) {
   rgb = resize_by_need(rgb, w, h);
   mineru::VisionInput vi = mineru::preprocess_image(rgb, w, h);
   int n_img = vi.seq_len() / (model.config().spatial_merge_size * model.config().spatial_merge_size);
   std::vector<float> embeds = model.forward_vision(vi.pixel_values, vi.grid_thw);
   std::vector<int> prompt = build_prompt(tok, n_img, model.config().image_token_id, instruction);
   std::vector<int> gen = model.generate_multimodal(prompt, embeds, n_img, vi.grid_thw, max_new, kEos);
-  std::string s = tok.decode(gen, /*skip_special=*/true);
+  // Tables need the OTSL structure tokens (<fcel>/<nl>/...) which are *special*
+  // tokens — keep them so convert_otsl_to_html can rebuild the grid.
+  std::string s = tok.decode(gen, /*skip_special=*/!keep_special);
   // trim
   size_t a = s.find_first_not_of(" \t\r\n");
   size_t z = s.find_last_not_of(" \t\r\n");
@@ -140,9 +143,9 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
                            {"lines", text_lines(content, bb)}});
       continue;
     }
-    std::string content =
-        extract_content(model, tok, crop, cw, ch, instruction_for(b.type),
-                        (b.type == "table") ? 2048 : 1024);
+    bool is_table = (b.type == "table");
+    std::string content = extract_content(model, tok, crop, cw, ch, instruction_for(b.type),
+                                          is_table ? 2048 : 1024, /*keep_special=*/is_table);
     json pb;
     if (b.type == "title") {
       pb = {{"type", bt::kTitle}, {"level", 1}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
