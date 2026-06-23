@@ -74,26 +74,6 @@ static std::vector<uint8_t> resize_by_need(std::vector<uint8_t> rgb, int& w, int
   return rgb;
 }
 
-// Run the VLM on one cropped block image with a type-specific instruction.
-static std::string extract_content(const mineru::Qwen2VLModel& model,
-                                   const mineru::Qwen2Tokenizer& tok, std::vector<uint8_t> rgb,
-                                   int w, int h, const std::string& instruction, int max_new,
-                                   bool keep_special = false) {
-  rgb = resize_by_need(rgb, w, h);
-  mineru::VisionInput vi = mineru::preprocess_image(rgb, w, h);
-  int n_img = vi.seq_len() / (model.config().spatial_merge_size * model.config().spatial_merge_size);
-  std::vector<float> embeds = model.forward_vision(vi.pixel_values, vi.grid_thw);
-  std::vector<int> prompt = build_prompt(tok, n_img, model.config().image_token_id, instruction);
-  std::vector<int> gen = model.generate_multimodal(prompt, embeds, n_img, vi.grid_thw, max_new, kEos);
-  // Tables need the OTSL structure tokens (<fcel>/<nl>/...) which are *special*
-  // tokens — keep them so convert_otsl_to_html can rebuild the grid.
-  std::string s = tok.decode(gen, /*skip_special=*/!keep_special);
-  // trim
-  size_t a = s.find_first_not_of(" \t\r\n");
-  size_t z = s.find_last_not_of(" \t\r\n");
-  return a == std::string::npos ? "" : s.substr(a, z - a + 1);
-}
-
 // Per-layout-type extraction instruction (DEFAULT_PROMPTS).
 static std::string instruction_for(const std::string& type) {
   if (type == "table") return "\nTable Recognition:";
@@ -112,7 +92,7 @@ static json text_lines(const std::string& content, const std::array<double, 4>& 
 static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
                          const mineru::PageImage& pg, int page_idx, bool layout_only,
                          std::vector<mineru::ContentBlock>* layout_out = nullptr,
-                         const std::string& images_dir = "") {
+                         const std::string& images_dir = "", int batch_size = 6) {
   const auto& cfg = model.config();
   std::vector<uint8_t> resized = mineru::resize_bicubic_rgb8(pg.rgb, pg.width, pg.height, 1036, 1036);
   mineru::VisionInput vi = mineru::preprocess_image(resized, 1036, 1036);
@@ -133,22 +113,76 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
   };
   static const std::vector<std::string> discard_types = {
       bt::kHeader, bt::kFooter, bt::kPageNumber, bt::kPageFootnote, bt::kAsideText};
+
+  // Pass 1: per block, crop + vision tower + build the content prompt.
+  struct Job { int cw, ch; bool keep_special; std::vector<uint8_t> crop; };
+  std::vector<Job> jobs(blocks.size());
+  std::vector<std::vector<int>> prompts(blocks.size());
+  std::vector<std::vector<float>> embeds(blocks.size());
+  std::vector<int> nimgs(blocks.size());
+  std::vector<std::array<int, 3>> grids(blocks.size());
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    const auto& b = blocks[i];
+    std::cerr << "[mlx-mineru]  vision " << (i + 1) << "/" << blocks.size() << " (" << b.type << ")   \r";
+    bool discard = std::find(discard_types.begin(), discard_types.end(), b.type) != discard_types.end();
+    Job& j = jobs[i];
+    j.crop = crop_rgb(pg, b.bbox, j.cw, j.ch);
+    j.keep_special = (b.type == "table");
+    std::vector<uint8_t> crop = resize_by_need(j.crop, j.cw, j.ch);
+    mineru::VisionInput cvi = mineru::preprocess_image(crop, j.cw, j.ch);
+    nimgs[i] = cvi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
+    grids[i] = cvi.grid_thw;
+    embeds[i] = model.forward_vision(cvi.pixel_values, cvi.grid_thw);
+    std::string instr = discard ? "\nText Recognition:" : instruction_for(b.type);
+    prompts[i] = build_prompt(tok, nimgs[i], cfg.image_token_id, instr);
+  }
+  // Pass 2: batched generation, length-bucketed. Sort blocks by prompt length
+  // and batch similar-length ones together so left-padding waste stays small
+  // (image-token counts vary a lot across crops).
+  const int kBatch = std::max(1, batch_size);
+  std::vector<std::vector<int>> gens(blocks.size());
+  std::vector<int> order(blocks.size());
+  for (size_t i = 0; i < order.size(); ++i) order[i] = (int)i;
+  std::sort(order.begin(), order.end(),
+            [&](int a, int b) { return prompts[a].size() < prompts[b].size(); });
+  std::cerr << "[mlx-mineru]  batched generation over " << blocks.size() << " blocks (groups of "
+            << kBatch << ") ...\n";
+  for (size_t off = 0; off < order.size(); off += kBatch) {
+    size_t end = std::min(order.size(), off + kBatch);
+    std::vector<std::vector<int>> bp, be_ids;
+    std::vector<std::vector<float>> be;
+    std::vector<int> bn;
+    std::vector<std::array<int, 3>> bg;
+    for (size_t k = off; k < end; ++k) {
+      int i = order[k];
+      bp.push_back(prompts[i]);
+      be.push_back(embeds[i]);
+      bn.push_back(nimgs[i]);
+      bg.push_back(grids[i]);
+    }
+    auto out = model.generate_multimodal_batch(bp, be, bn, bg, 2048, kEos);
+    for (size_t k = off; k < end; ++k) gens[order[k]] = std::move(out[k - off]);
+  }
+
+  // Pass 3: decode + assemble.
   int index = 0;
   for (size_t i = 0; i < blocks.size(); ++i) {
     const auto& b = blocks[i];
-    std::cerr << "[mlx-mineru]  block " << (i + 1) << "/" << blocks.size() << " (" << b.type << ")   \r";
-    int cw, ch;
-    std::vector<uint8_t> crop = crop_rgb(pg, b.bbox, cw, ch);
+    Job& j = jobs[i];
     auto bb = scaled(b.bbox);
+    std::string content = tok.decode(gens[i], /*skip_special=*/!j.keep_special);
+    {  // trim
+      size_t a = content.find_first_not_of(" \t\r\n");
+      size_t z = content.find_last_not_of(" \t\r\n");
+      content = (a == std::string::npos) ? "" : content.substr(a, z - a + 1);
+    }
     if (std::find(discard_types.begin(), discard_types.end(), b.type) != discard_types.end()) {
-      std::string content = extract_content(model, tok, crop, cw, ch, "\nText Recognition:", 512);
       discarded.push_back({{"type", bt::kDiscarded}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                            {"lines", text_lines(content, bb)}});
       continue;
     }
-    bool is_table = (b.type == "table");
-    std::string content = extract_content(model, tok, crop, cw, ch, instruction_for(b.type),
-                                          is_table ? 2048 : 1024, /*keep_special=*/is_table);
+    int cw = j.cw, ch = j.ch;
+    std::vector<uint8_t>& crop = j.crop;
     json pb;
     if (b.type == "title") {
       pb = {{"type", bt::kTitle}, {"level", 1}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
@@ -255,7 +289,7 @@ int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
   std::string host = "127.0.0.1";
-  int start_page = 0, end_page = -1, port = 8000, bits = 4;
+  int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6;
   bool layout_only = false, server = false;
   app.add_option("-p,--path", pdf_path, "Input PDF path (not needed with --server)");
   app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
@@ -267,6 +301,7 @@ int main(int argc, char** argv) {
   app.add_option("--host", host, "Server bind host (default 127.0.0.1)");
   app.add_option("--port", port, "Server port (default 8000)");
   app.add_option("--bits", bits, "Weight quantization bits: 4 (default) / 8 / 0 (full bf16)");
+  app.add_option("--batch", batch_size, "Block generation batch size (default 6; 1 = sequential)");
   CLI11_PARSE(app, argc, argv);
 
   auto t0 = std::chrono::steady_clock::now();
@@ -304,7 +339,7 @@ int main(int argc, char** argv) {
   for (int p = s; p <= e; ++p) {
     mineru::PageImage pg = doc.render_page(p);
     std::vector<mineru::ContentBlock> blocks;
-    json page_info = process_page(model, tok, pg, p, layout_only, &blocks, images_dir);
+    json page_info = process_page(model, tok, pg, p, layout_only, &blocks, images_dir, batch_size);
     if (layout_only) {
       json jb = json::array();
       for (auto& b : blocks) {

@@ -413,6 +413,159 @@ struct Qwen2VLModel::Impl {
     return out;
   }
 
+  // ---- Batched multimodal generation -------------------------------------
+  // Build (cos,sin) of shape (B,1,L,hd) from per-sample (left-padded) positions.
+  std::pair<array, array> rope_cos_sin_batch(const std::vector<PositionIds>& pos, int B, int L) const {
+    int hd = cfg.head_dim(), half = hd / 2;
+    std::vector<int> sel(half, 0);
+    int off = cfg.mrope_section[0];
+    for (int i = off; i < off + cfg.mrope_section[1] && i < half; ++i) sel[i] = 1;
+    off += cfg.mrope_section[1];
+    for (int i = off; i < off + cfg.mrope_section[2] && i < half; ++i) sel[i] = 2;
+    std::vector<float> inv_freq(half);
+    for (int i = 0; i < half; ++i) inv_freq[i] = 1.0f / std::pow(cfg.rope_theta, (2.0f * i) / hd);
+    std::vector<float> emb((size_t)B * L * hd);
+    for (int b = 0; b < B; ++b)
+      for (int t = 0; t < L; ++t)
+        for (int f = 0; f < half; ++f) {
+          float a = (float)pos[b][sel[f]][t] * inv_freq[f];
+          size_t base = ((size_t)b * L + t) * hd;
+          emb[base + f] = a;
+          emb[base + half + f] = a;
+        }
+    array e(emb.data(), mx::Shape{B, L, hd}, mx::float32);
+    return {mx::astype(mx::reshape(mx::cos(e), {B, 1, L, hd}), mx::bfloat16),
+            mx::astype(mx::reshape(mx::sin(e), {B, 1, L, hd}), mx::bfloat16)};
+  }
+
+  // Batched transformer forward (B,L,H) with explicit additive attention mask.
+  array forward_batch(array h, const array& cos, const array& sin, KVCache& cache,
+                      const array& mask) const {
+    int B = h.shape()[0], L = h.shape()[1];
+    int nH = cfg.num_attention_heads, nKV = cfg.num_key_value_heads, hd = cfg.head_dim();
+    float scale = 1.0f / std::sqrt((float)hd);
+    for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+      std::string p = "model.layers." + std::to_string(l) + ".";
+      array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
+      array q = linear_w(hn, p + "self_attn.q_proj.weight", p + "self_attn.q_proj.bias");
+      array k = linear_w(hn, p + "self_attn.k_proj.weight", p + "self_attn.k_proj.bias");
+      array v = linear_w(hn, p + "self_attn.v_proj.weight", p + "self_attn.v_proj.bias");
+      q = apply_rope(mx::transpose(mx::reshape(q, {B, L, nH, hd}), {0, 2, 1, 3}), cos, sin);
+      k = apply_rope(mx::transpose(mx::reshape(k, {B, L, nKV, hd}), {0, 2, 1, 3}), cos, sin);
+      v = mx::transpose(mx::reshape(v, {B, L, nKV, hd}), {0, 2, 1, 3});
+      if (cache.k[l]) {
+        k = mx::concatenate({*cache.k[l], k}, 2);
+        v = mx::concatenate({*cache.v[l], v}, 2);
+      }
+      cache.k[l] = k;
+      cache.v[l] = v;
+      array o = mx::fast::scaled_dot_product_attention(q, k, v, scale, "", mask);
+      o = linear_w(mx::reshape(mx::transpose(o, {0, 2, 1, 3}), {B, L, nH * hd}),
+                   p + "self_attn.o_proj.weight");
+      h = mx::add(h, o);
+      array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
+      array gate = linear_w(h2, p + "mlp.gate_proj.weight");
+      array up = linear_w(h2, p + "mlp.up_proj.weight");
+      h = mx::add(h, linear_w(mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), up),
+                              p + "mlp.down_proj.weight"));
+    }
+    return mx::fast::rms_norm(h, get("model.norm.weight"), cfg.rms_norm_eps);
+  }
+
+  // Per-row argmax of logits = hlast @ embedW.T, on GPU; returns B token ids.
+  std::vector<int> argmax_batch(const array& hlast) const {
+    array logits = linear_w(hlast, "model.embed_tokens.weight");  // (B, vocab)
+    array am = mx::argmax(logits, /*axis=*/-1);                   // (B,)
+    mx::eval(am);
+    array am32 = mx::astype(am, mx::int32);
+    mx::eval(am32);
+    const int* p = am32.data<int>();
+    return std::vector<int>(p, p + hlast.shape()[0]);
+  }
+
+  std::vector<std::vector<int>> generate_batch(
+      const std::vector<std::vector<int>>& prompts,
+      const std::vector<std::vector<float>>& embeds_list, const std::vector<int>& n_imgs,
+      const std::vector<std::array<int, 3>>& grids, int max_new,
+      const std::vector<int>& eos_ids) const {
+    const float NEG = -1e9f;
+    int B = (int)prompts.size(), H = cfg.hidden_size;
+    std::vector<int> Lb(B), pad(B), nextpos(B);
+    std::vector<array> e_b;
+    std::vector<PositionIds> pos_b(B);
+    int Lmax = 0;
+    for (int b = 0; b < B; ++b) {
+      Lb[b] = (int)prompts[b].size();
+      Lmax = std::max(Lmax, Lb[b]);
+      e_b.push_back(mx::reshape(build_multimodal_embeds(prompts[b], embeds_list[b], n_imgs[b]), {Lb[b], H}));
+      pos_b[b] = (n_imgs[b] > 0) ? get_rope_index(prompts[b], grids[b]) : PositionIds{};
+      if (n_imgs[b] <= 0)
+        for (int a = 0; a < 3; ++a) { pos_b[b][a].resize(Lb[b]); for (int t = 0; t < Lb[b]; ++t) pos_b[b][a][t] = t; }
+      int mp = 0;
+      for (int a = 0; a < 3; ++a) mp = std::max(mp, pos_b[b][a][Lb[b] - 1]);
+      nextpos[b] = mp + 1;
+    }
+    // Left-pad embeds -> (B, Lmax, H); padded positions; prefill mask.
+    std::vector<array> rows;
+    std::vector<PositionIds> ppos(B);
+    for (int b = 0; b < B; ++b) {
+      pad[b] = Lmax - Lb[b];
+      array eb = e_b[b];
+      if (pad[b] > 0) eb = mx::concatenate({mx::zeros({pad[b], H}, mx::bfloat16), eb}, 0);
+      rows.push_back(mx::reshape(eb, {1, Lmax, H}));
+      for (int a = 0; a < 3; ++a) {
+        ppos[b][a].assign(Lmax, 0);
+        for (int t = 0; t < Lb[b]; ++t) ppos[b][a][pad[b] + t] = pos_b[b][a][t];
+      }
+    }
+    array h = mx::concatenate(rows, 0);
+    auto [cos, sin] = rope_cos_sin_batch(ppos, B, Lmax);
+    std::vector<float> pm((size_t)B * Lmax * Lmax);
+    for (int b = 0; b < B; ++b)
+      for (int i = 0; i < Lmax; ++i)
+        for (int j = 0; j < Lmax; ++j)
+          pm[((size_t)b * Lmax + i) * Lmax + j] = (j >= pad[b] && j <= i) ? 0.f : NEG;
+    array mask = mx::astype(array(pm.data(), mx::Shape{B, 1, Lmax, Lmax}, mx::float32), mx::bfloat16);
+
+    KVCache cache(cfg.num_hidden_layers);
+    array hid = forward_batch(h, cos, sin, cache, mask);
+    std::vector<int> next = argmax_batch(mx::take(hid, Lmax - 1, 1));  // (B,)
+
+    std::vector<std::vector<int>> out(B);
+    std::vector<bool> done(B, false);
+    int T = Lmax;
+    for (int step = 0; step < max_new; ++step) {
+      bool all_done = true;
+      for (int b = 0; b < B; ++b) {
+        if (done[b]) continue;
+        bool is_eos = false;
+        for (int e : eos_ids) if (next[b] == e) is_eos = true;
+        if (is_eos) { done[b] = true; continue; }
+        out[b].push_back(next[b]);
+        all_done = false;
+      }
+      if (all_done) break;
+      // Decode one token for the whole batch.
+      std::vector<array> erows;
+      std::vector<PositionIds> dpos(B);
+      for (int b = 0; b < B; ++b) {
+        erows.push_back(embed_tokens(std::vector<int>{next[b]}));  // (1,1,H)
+        for (int a = 0; a < 3; ++a) dpos[b][a] = {nextpos[b]};
+      }
+      array eh = mx::concatenate(erows, 0);  // (B,1,H)
+      auto [dcos, dsin] = rope_cos_sin_batch(dpos, B, 1);
+      ++T;
+      std::vector<float> dm((size_t)B * T);
+      for (int b = 0; b < B; ++b)
+        for (int j = 0; j < T; ++j) dm[(size_t)b * T + j] = (j >= pad[b]) ? 0.f : NEG;
+      array dmask = mx::astype(array(dm.data(), mx::Shape{B, 1, 1, T}, mx::float32), mx::bfloat16);
+      array dh = forward_batch(eh, dcos, dsin, cache, dmask);
+      next = argmax_batch(mx::reshape(dh, {B, H}));
+      for (int b = 0; b < B; ++b) ++nextpos[b];
+    }
+    return out;
+  }
+
   // Multimodal last-token logits: merge vision embeds into the token stream.
   std::vector<float> mm_last_logits(const std::vector<int>& ids,
                                     const std::vector<float>& image_embeds, int n_img,
@@ -480,6 +633,15 @@ std::vector<int> Qwen2VLModel::generate_multimodal(const std::vector<int>& input
                                                    const std::array<int, 3>& grid, int max_new_tokens,
                                                    const std::vector<int>& eos_ids) const {
   return impl_->generate_cached(input_ids, image_embeds, n_img, grid, max_new_tokens, eos_ids);
+}
+
+std::vector<std::vector<int>> Qwen2VLModel::generate_multimodal_batch(
+    const std::vector<std::vector<int>>& input_ids,
+    const std::vector<std::vector<float>>& image_embeds, const std::vector<int>& n_img,
+    const std::vector<std::array<int, 3>>& grids, int max_new_tokens,
+    const std::vector<int>& eos_ids) const {
+  if (input_ids.empty()) return {};
+  return impl_->generate_batch(input_ids, image_embeds, n_img, grids, max_new_tokens, eos_ids);
 }
 
 }  // namespace mineru

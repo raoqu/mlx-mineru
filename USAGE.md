@@ -101,6 +101,7 @@ mlx-mineru -p <file.pdf> [options]
 | `--host <h>` | `127.0.0.1` | Server bind host |
 | `--port <p>` | `8000` | Server port |
 | `--bits <n>` | `4` | LLM weight quantization: `4` / `8` / `0` (full bf16). 4-bit ≈ 10–25% faster generation and ~4× smaller LLM weights, byte-identical greedy output in practice. Use `0` for exact bf16 parity. |
+| `--batch <n>` | `6` | Per-block generation batch size (length-bucketed). `>1` runs blocks together (~5–15% faster, scales with block count). `1` = sequential, deterministic. Note: batched GPU matmul can flip rare near-tie tokens, so output may differ slightly from `--batch 1`. |
 
 ### Examples
 
@@ -192,9 +193,10 @@ curl -X POST -F "files=@paper.pdf" http://127.0.0.1:8000/file_parse
 - **Greedy decoding** (`top_k=1`), matching the model's generation config.
 - **Performance:** the LLM decoder is 4-bit quantized by default (memory-bandwidth
   bound → quantization helps). The vision tower stays bf16 (compute-bound — quantizing
-  it is *slower*). The dominant per-page cost is the layout vision pass + the *per-block*
-  content passes (one model call per block); **batching those blocks is the next major
-  speedup** (what the Python/mlx-vlm path does) and is not yet implemented here.
+  it is *slower*). Per-block content generation is **batched** (length-bucketed) so the
+  decoder weights are read ~once per group instead of once per block. Both are tunable
+  via `--bits` / `--batch`. Per-block vision forwards are still sequential (variable
+  crop sizes); batching those is possible future work.
 - **Simplified vs MinerU Python** (non-blocking): title heading levels are all
   `#`; MagicModel caption/footnote association, the full equation-fix set, image
   reclassification, and cross-page table merge are not yet ported. Core output is

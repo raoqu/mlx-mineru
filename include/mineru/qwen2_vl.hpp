@@ -84,6 +84,16 @@ class Qwen2VLModel {
                                        const std::array<int, 3>& grid, int max_new_tokens,
                                        const std::vector<int>& eos_ids) const;
 
+  // Batched greedy multimodal generation: runs all samples through one batched
+  // forward (left-padded), decoding together with per-sample EOS. Equivalent to
+  // calling generate_multimodal on each sample, but far faster (weights read
+  // ~max-length times instead of sum-of-lengths). Returns per-sample generated ids.
+  std::vector<std::vector<int>> generate_multimodal_batch(
+      const std::vector<std::vector<int>>& input_ids,
+      const std::vector<std::vector<float>>& image_embeds, const std::vector<int>& n_img,
+      const std::vector<std::array<int, 3>>& grids, int max_new_tokens,
+      const std::vector<int>& eos_ids) const;
+
  private:
   Qwen2VLModel();
   struct Impl;
