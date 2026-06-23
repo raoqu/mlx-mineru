@@ -38,23 +38,28 @@ assembly, overhead) — use it to target work.
   (239→394 tok/s)** on a.pdf (3 pages); total **11.7s→10.75s**, output byte-identical.
   Scales with page count. (Layout vision stayed flat — compute-bound, as predicted.)
 
-## Findings — content-vision batching (Tier 1, attempted)
+## Findings — vision batching (Metal/MLX)
 
-Both Tier-1 vision approaches were implemented and measured on `a.pdf`; **neither sped
-up content vision** (~3.6s for 26 crops):
+Several vision-batching strategies were implemented and measured on `a.pdf`:
 
 | Approach | content vision | verdict |
 |---|---:|---|
 | per-crop (baseline) | 3.60s | — |
-| lazy + single eval (`forward_vision_batch`) | 3.57s | **neutral** (MLX runs the forwards serially on the GPU; it's compute-bound, not sync-bound) |
-| packed: concat patches + block-diagonal **dense** mask | 3.96s | **slower** (O(T²) attention waste > linear-layer batching gain); reverted |
+| lazy + single eval | 3.57s | neutral (MLX runs forwards serially; compute-bound) |
+| packed: concat patches + **dense** block-diagonal mask | 3.96s | **slower** — O(T²) attention waste > GEMM-batching gain; reverted |
+| **batch dim, grouped by identical grid** (`forward_vision_uniform`) | **3.40s** | **~5% (kept)** — same-grid crops share one big Metal GEMM, attention stays per-image (no mask/waste) |
 
-Conclusion: content vision is compute-bound serial GPU work. The C++ MLX API has **no
-varlen / `cu_seqlens` block-diagonal flash attention**, so packing must pay full O(T²)
-attention. A real speedup needs that kernel (Tier 3 #7) — otherwise per-crop is optimal.
+For the uniform **layout** images (all same grid) the batch-dim path is exact-batched
+but **flat** (2.88s) — a single 5476-patch forward already saturates the Metal GEMM, so
+B=3 adds no occupancy.
 
-The kept structure (lazy `forward_vision_batch`) is neutral but cleaner (one sync) and
-is the natural seam for a future varlen kernel.
+**Conclusion:** vision is compute-bound and MLX's Metal GEMM is already near-optimal.
+Batching helps only marginally (content crops sharing a grid); large images are already
+saturated. The remaining lever — a custom **varlen/`cu_seqlens` flash-attention Metal
+kernel** — would not help here either, because for these crop sizes the *linear layers*
+(GEMM, already optimal), not attention, dominate. The kept `forward_vision_uniform`
+(batch-dim, grid-grouped) is correct (output byte-identical) and is the right structure;
+bigger gains would require fewer/larger images, not a different kernel.
 
 Cross-page layout batching (the clean uniform-size win) was subsequently implemented —
 see "Already done" above. It confirmed the model: **generation** batches well (memory-

@@ -3,6 +3,7 @@
 #include "mineru/qwen2_vl.hpp"
 
 #include <cmath>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -320,26 +321,100 @@ struct Qwen2VLModel::Impl {
     return std::vector<float>(dp, dp + static_cast<size_t>(merged) * cfg.hidden_size);
   }
 
-  // Encode many crops: build all vision graphs lazily and evaluate them in ONE
-  // synchronized batch (single GPU sync instead of one per crop), then copy.
-  // NOTE: this is perf-neutral vs per-crop on current MLX (forwards run serially
-  // on the GPU; content vision is compute-bound). True speedup would need a
-  // varlen/cu_seqlens block-diagonal flash-attention kernel — packing with a
-  // dense mask was measured *slower* (O(T^2) attention waste).
+  // Batched ViT for images that share the SAME grid (e.g. the uniform 1036x1036
+  // layout images). Stacks B images on a real batch dim -> one big GEMM per
+  // linear layer (better Metal occupancy) and B independent attention blocks
+  // (no mask, no O(T^2) waste). Returns per-image merged embeds.
+  std::vector<std::vector<float>> forward_vision_uniform(
+      const std::vector<std::vector<float>>& pv_list, const std::array<int, 3>& grid) const {
+    int B = (int)pv_list.size();
+    int gt = grid[0], gh = grid[1], gw = grid[2], seq = gt * gh * gw;
+    int ed = cfg.v_embed_dim, nH = cfg.v_num_heads, hd = cfg.v_head_dim(), ms = cfg.spatial_merge_size;
+    int feat = 3 * cfg.v_temporal_patch_size * cfg.v_patch_size * cfg.v_patch_size;
+    float scale = 1.0f / std::sqrt((float)hd);
+
+    std::vector<float> flat((size_t)B * seq * feat);
+    for (int b = 0; b < B; ++b)
+      std::copy(pv_list[b].begin(), pv_list[b].end(), flat.begin() + (size_t)b * seq * feat);
+    array pv(flat.data(), mx::Shape{B * seq, feat}, mx::float32);
+    array pe_w = mx::reshape(get("visual.patch_embed.proj.weight"), {ed, feat});
+    array h = mx::reshape(mx::matmul(mx::astype(pv, mx::bfloat16), mx::transpose(pe_w)), {B, seq, ed});
+
+    // Rotary (seq, hd) for this grid; broadcast over B and heads -> (1, seq, 1, hd).
+    int rdim = hd / 2, nfreq = rdim / 2;
+    std::vector<float> inv_freq(nfreq);
+    for (int i = 0; i < nfreq; ++i) inv_freq[i] = 1.0f / std::pow(cfg.v_rope_theta, (2.0f * i) / rdim);
+    std::vector<float> cosv((size_t)seq * hd), sinv((size_t)seq * hd);
+    int pp = 0;
+    for (int t = 0; t < gt; ++t)
+      for (int hb = 0; hb < gh / ms; ++hb)
+        for (int wb = 0; wb < gw / ms; ++wb)
+          for (int mh = 0; mh < ms; ++mh)
+            for (int mw = 0; mw < ms; ++mw) {
+              int hpx = hb * ms + mh, wpx = wb * ms + mw;
+              for (int f = 0; f < nfreq; ++f) {
+                float ah = hpx * inv_freq[f], aw = wpx * inv_freq[f];
+                size_t base = (size_t)pp * hd;
+                cosv[base + f] = std::cos(ah);        cosv[base + nfreq + f] = std::cos(aw);
+                cosv[base + rdim + f] = std::cos(ah); cosv[base + rdim + nfreq + f] = std::cos(aw);
+                sinv[base + f] = std::sin(ah);        sinv[base + nfreq + f] = std::sin(aw);
+                sinv[base + rdim + f] = std::sin(ah); sinv[base + rdim + nfreq + f] = std::sin(aw);
+              }
+              ++pp;
+            }
+    array cos = mx::astype(mx::reshape(array(cosv.data(), mx::Shape{seq, hd}, mx::float32), {1, seq, 1, hd}), mx::bfloat16);
+    array sin = mx::astype(mx::reshape(array(sinv.data(), mx::Shape{seq, hd}, mx::float32), {1, seq, 1, hd}), mx::bfloat16);
+
+    for (int bl = 0; bl < cfg.v_depth; ++bl) {
+      std::string pr = "visual.blocks." + std::to_string(bl) + ".";
+      array hn = mx::fast::layer_norm(h, get(pr + "norm1.weight"), get(pr + "norm1.bias"), 1e-6f);
+      array qkv = mx::reshape(linear_w(hn, pr + "attn.qkv.weight", pr + "attn.qkv.bias"), {B, seq, 3, nH, hd});
+      array q = mx::squeeze(mx::slice(qkv, {0, 0, 0, 0, 0}, {B, seq, 1, nH, hd}), 2);  // (B,seq,nH,hd)
+      array k = mx::squeeze(mx::slice(qkv, {0, 0, 1, 0, 0}, {B, seq, 2, nH, hd}), 2);
+      array v = mx::squeeze(mx::slice(qkv, {0, 0, 2, 0, 0}, {B, seq, 3, nH, hd}), 2);
+      q = mx::transpose(vision_rope_apply(q, cos, sin), {0, 2, 1, 3});  // (B,nH,seq,hd)
+      k = mx::transpose(vision_rope_apply(k, cos, sin), {0, 2, 1, 3});
+      v = mx::transpose(v, {0, 2, 1, 3});
+      array o = mx::fast::scaled_dot_product_attention(q, k, v, scale, "");  // per-image full attn
+      o = mx::reshape(mx::transpose(o, {0, 2, 1, 3}), {B, seq, ed});
+      h = mx::add(h, linear_w(o, pr + "attn.proj.weight", pr + "attn.proj.bias"));
+      array h2 = mx::fast::layer_norm(h, get(pr + "norm2.weight"), get(pr + "norm2.bias"), 1e-6f);
+      array fc1 = linear_w(h2, pr + "mlp.fc1.weight", pr + "mlp.fc1.bias");
+      array act = mx::multiply(fc1, mx::sigmoid(mx::multiply(fc1, array(1.702f))));
+      h = mx::add(h, linear_w(act, pr + "mlp.fc2.weight", pr + "mlp.fc2.bias"));
+    }
+    array m = mx::fast::layer_norm(h, get("visual.merger.ln_q.weight"), get("visual.merger.ln_q.bias"), 1e-6f);
+    m = mx::reshape(m, {B * (seq / (ms * ms)), ed * ms * ms});
+    m = linear_w(m, "visual.merger.mlp.0.weight", "visual.merger.mlp.0.bias");
+    array gelu = mx::multiply(mx::multiply(m, array(0.5f)),
+                              mx::add(array(1.0f), mx::erf(mx::divide(m, array(std::sqrt(2.0f))))));
+    m = mx::astype(linear_w(gelu, "visual.merger.mlp.2.weight", "visual.merger.mlp.2.bias"), mx::float32);
+    mx::eval(m);
+    const float* dp = m.data<float>();
+    int mc = seq / (ms * ms);
+    std::vector<std::vector<float>> out(B);
+    for (int b = 0; b < B; ++b)
+      out[b].assign(dp + (size_t)b * mc * cfg.hidden_size, dp + (size_t)(b + 1) * mc * cfg.hidden_size);
+    return out;
+  }
+
+  // Encode many crops, batching together those that share the same grid (so the
+  // linear layers run as one big Metal GEMM and attention stays per-image with no
+  // mask/waste). Same-grid groups (e.g. all uniform layout images) get a real
+  // batch dim via forward_vision_uniform; singletons fall back to one forward.
   std::vector<std::vector<float>> forward_vision_batch(
       const std::vector<std::vector<float>>& pv_list,
       const std::vector<std::array<int, 3>>& grids) const {
     int n = (int)pv_list.size();
-    std::vector<array> ms;
-    ms.reserve(n);
-    for (int i = 0; i < n; ++i) ms.push_back(forward_vision_array(pv_list[i], grids[i]));
-    if (!ms.empty()) mx::eval(ms);  // single synchronized batch
+    std::map<std::array<int, 3>, std::vector<int>> groups;  // grid -> indices (sorted)
+    for (int i = 0; i < n; ++i) groups[grids[i]].push_back(i);
     std::vector<std::vector<float>> out(n);
-    for (int i = 0; i < n; ++i) {
-      int merged = (grids[i][0] * grids[i][1] * grids[i][2]) /
-                   (cfg.spatial_merge_size * cfg.spatial_merge_size);
-      const float* dp = ms[i].data<float>();
-      out[i].assign(dp, dp + (size_t)merged * cfg.hidden_size);
+    for (auto& [grid, idxs] : groups) {
+      std::vector<std::vector<float>> sub;
+      sub.reserve(idxs.size());
+      for (int i : idxs) sub.push_back(pv_list[i]);
+      auto emb = forward_vision_uniform(sub, grid);
+      for (size_t k = 0; k < idxs.size(); ++k) out[idxs[k]] = std::move(emb[k]);
     }
     return out;
   }
