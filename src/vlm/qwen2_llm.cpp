@@ -72,17 +72,54 @@ struct Qwen2VLModel::Impl {
     return mx::add(mx::multiply(x, cos), mx::multiply(rotate_half(x), sin));
   }
 
-  // Full transformer forward; returns final-norm hidden states (1, L, H).
-  array forward_hidden(const std::vector<int>& tokens, const PositionIds& pos) const {
+  // Embed token ids -> (1, L, H).
+  array embed_tokens(const std::vector<int>& tokens) const {
     int L = static_cast<int>(tokens.size());
-    int H = cfg.hidden_size, nH = cfg.num_attention_heads, nKV = cfg.num_key_value_heads;
-    int hd = cfg.head_dim();
-    float scale = 1.0f / std::sqrt(static_cast<float>(hd));
-
     std::vector<int> tok = tokens;
     array idx(tok.data(), mx::Shape{L}, mx::int32);
-    array h = mx::reshape(mx::take(get("model.embed_tokens.weight"), idx, 0), {1, L, H});
+    return mx::reshape(mx::take(get("model.embed_tokens.weight"), idx, 0), {1, L, cfg.hidden_size});
+  }
 
+  // 3D MRoPE position ids for a sequence with at most one image (Qwen2-VL
+  // get_rope_index). `grid` is (t, gh, gw) in patch units; image tokens must be
+  // the contiguous run of image_token_id.
+  PositionIds get_rope_index(const std::vector<int>& ids, const std::array<int, 3>& grid) const {
+    int L = static_cast<int>(ids.size());
+    PositionIds pos;
+    for (int a = 0; a < 3; ++a) pos[a].assign(L, 0);
+    int img_start = -1;
+    for (int i = 0; i < L; ++i)
+      if (ids[i] == cfg.image_token_id) { img_start = i; break; }
+    if (img_start < 0) {
+      for (int a = 0; a < 3; ++a)
+        for (int t = 0; t < L; ++t) pos[a][t] = t;
+      return pos;
+    }
+    int merge = cfg.spatial_merge_size;
+    int lt = grid[0], lh = grid[1] / merge, lw = grid[2] / merge;
+    int n_img = lt * lh * lw;
+    for (int t = 0; t < img_start; ++t)
+      for (int a = 0; a < 3; ++a) pos[a][t] = t;       // text before image
+    int base = img_start;                              // text_len + st_idx(0)
+    for (int k = 0; k < n_img; ++k) {
+      int ti = k / (lh * lw), hi = (k / lw) % lh, wi = k % lw;
+      pos[0][img_start + k] = base + ti;
+      pos[1][img_start + k] = base + hi;
+      pos[2][img_start + k] = base + wi;
+    }
+    int next = base + std::max(std::max(lt, lh), lw);  // max image pos + 1
+    int after = img_start + n_img;
+    for (int j = after; j < L; ++j)
+      for (int a = 0; a < 3; ++a) pos[a][j] = next + (j - after);
+    return pos;
+  }
+
+  // Full transformer forward from input embeddings (1,L,H) + 3D positions.
+  array forward_hidden_from_embeds(array h, const PositionIds& pos) const {
+    int L = h.shape()[1];
+    int nH = cfg.num_attention_heads, nKV = cfg.num_key_value_heads;
+    int hd = cfg.head_dim();
+    float scale = 1.0f / std::sqrt(static_cast<float>(hd));
     auto [cosA, sinA] = rope_cos_sin(pos, L);
 
     for (int l = 0; l < cfg.num_hidden_layers; ++l) {
@@ -113,6 +150,28 @@ struct Qwen2VLModel::Impl {
       h = mx::add(h, mlp);
     }
     return mx::fast::rms_norm(h, get("model.norm.weight"), cfg.rms_norm_eps);
+  }
+
+  array forward_hidden(const std::vector<int>& tokens, const PositionIds& pos) const {
+    return forward_hidden_from_embeds(embed_tokens(tokens), pos);
+  }
+
+  // Build inputs_embeds replacing the contiguous image-token run with vision
+  // embeds (image_embeds: [n_img, H] row-major float).
+  array build_multimodal_embeds(const std::vector<int>& ids,
+                                const std::vector<float>& image_embeds, int n_img) const {
+    int L = static_cast<int>(ids.size()), H = cfg.hidden_size;
+    array text = mx::reshape(embed_tokens(ids), {L, H});
+    int img_start = -1;
+    for (int i = 0; i < L; ++i)
+      if (ids[i] == cfg.image_token_id) { img_start = i; break; }
+    if (img_start < 0) return mx::reshape(text, {1, L, H});
+    array img = mx::astype(array(image_embeds.data(), mx::Shape{n_img, H}, mx::float32), mx::bfloat16);
+    std::vector<array> parts;
+    if (img_start > 0) parts.push_back(mx::slice(text, {0, 0}, {img_start, H}));
+    parts.push_back(img);
+    if (img_start + n_img < L) parts.push_back(mx::slice(text, {img_start + n_img, 0}, {L, H}));
+    return mx::reshape(mx::concatenate(parts, 0), {1, L, H});
   }
 
   // ---- Vision tower (faithful to mlx-vlm qwen2_vl vision.py) ----------------
@@ -216,6 +275,21 @@ struct Qwen2VLModel::Impl {
     const float* p = logits.data<float>();
     return std::vector<float>(p, p + cfg.vocab_size);
   }
+
+  // Multimodal last-token logits: merge vision embeds into the token stream.
+  std::vector<float> mm_last_logits(const std::vector<int>& ids,
+                                    const std::vector<float>& image_embeds, int n_img,
+                                    const std::array<int, 3>& grid) const {
+    int L = static_cast<int>(ids.size());
+    array h = build_multimodal_embeds(ids, image_embeds, n_img);
+    PositionIds pos = get_rope_index(ids, grid);
+    h = forward_hidden_from_embeds(h, pos);
+    array h_last = mx::take(h, L - 1, 1);
+    array logits = mx::astype(linear(h_last, get("model.embed_tokens.weight")), mx::float32);
+    mx::eval(logits);
+    const float* p = logits.data<float>();
+    return std::vector<float>(p, p + cfg.vocab_size);
+  }
 };
 
 Qwen2VLModel::Qwen2VLModel() : impl_(std::make_unique<Impl>()) {}
@@ -254,6 +328,33 @@ int Qwen2VLModel::argmax_next(const std::vector<int>& tokens) const {
 std::vector<float> Qwen2VLModel::forward_vision(const std::vector<float>& pixel_values,
                                                 const std::array<int, 3>& grid) const {
   return impl_->forward_vision(pixel_values, grid);
+}
+
+std::vector<float> Qwen2VLModel::multimodal_last_logits(const std::vector<int>& input_ids,
+                                                        const std::vector<float>& image_embeds,
+                                                        int n_img,
+                                                        const std::array<int, 3>& grid) const {
+  return impl_->mm_last_logits(input_ids, image_embeds, n_img, grid);
+}
+
+std::vector<int> Qwen2VLModel::generate_multimodal(const std::vector<int>& input_ids,
+                                                   const std::vector<float>& image_embeds, int n_img,
+                                                   const std::array<int, 3>& grid, int max_new_tokens,
+                                                   const std::vector<int>& eos_ids) const {
+  std::vector<int> cur = input_ids;
+  std::vector<int> out;
+  for (int step = 0; step < max_new_tokens; ++step) {
+    std::vector<float> logits = impl_->mm_last_logits(cur, image_embeds, n_img, grid);
+    int best = 0;
+    for (int i = 1; i < (int)logits.size(); ++i)
+      if (logits[i] > logits[best]) best = i;
+    bool is_eos = false;
+    for (int e : eos_ids) if (best == e) is_eos = true;
+    if (is_eos) break;
+    out.push_back(best);
+    cur.push_back(best);
+  }
+  return out;
 }
 
 }  // namespace mineru

@@ -64,6 +64,20 @@ class Qwen2VLModel {
   std::vector<float> forward_vision(const std::vector<float>& pixel_values,
                                     const std::array<int, 3>& grid) const;
 
+  // Multimodal last-token logits (float32, vocab): `input_ids` contains a
+  // contiguous run of image_token_id placeholders replaced by `image_embeds`
+  // ([n_img, hidden_size]); `grid` is the image (t,gh,gw).
+  std::vector<float> multimodal_last_logits(const std::vector<int>& input_ids,
+                                            const std::vector<float>& image_embeds, int n_img,
+                                            const std::array<int, 3>& grid) const;
+
+  // Greedy multimodal generation; appends argmax tokens until `max_new_tokens`
+  // or an eos id. Returns the generated token ids (excluding the prompt).
+  std::vector<int> generate_multimodal(const std::vector<int>& input_ids,
+                                       const std::vector<float>& image_embeds, int n_img,
+                                       const std::array<int, 3>& grid, int max_new_tokens,
+                                       const std::vector<int>& eos_ids) const;
+
  private:
   Qwen2VLModel();
   struct Impl;
