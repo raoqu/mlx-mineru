@@ -6,6 +6,7 @@
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 #include "mlx/mlx.h"
 
@@ -276,6 +277,96 @@ struct Qwen2VLModel::Impl {
     return std::vector<float>(p, p + cfg.vocab_size);
   }
 
+  // ---- KV-cached forward / generation -------------------------------------
+  struct KVCache {
+    std::vector<std::optional<array>> k, v;  // per layer, cumulative (1,nKV,T,hd)
+    explicit KVCache(int n) : k(n), v(n) {}
+  };
+
+  // Forward `embeds` (1,L,H) with positions `pos`, using+updating `cache`.
+  // prefill=true uses a causal mask (L>1); decode (L==1) attends all cached keys.
+  // Returns final-norm hidden states (1, L, H).
+  array forward_cached(array h, const PositionIds& pos, KVCache& cache, bool prefill) const {
+    int L = h.shape()[1];
+    int nH = cfg.num_attention_heads, nKV = cfg.num_key_value_heads, hd = cfg.head_dim();
+    float scale = 1.0f / std::sqrt(static_cast<float>(hd));
+    auto [cosA, sinA] = rope_cos_sin(pos, L);
+    std::string mask = prefill ? "causal" : "";
+
+    for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+      std::string p = "model.layers." + std::to_string(l) + ".";
+      array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
+      array q = linear(hn, get(p + "self_attn.q_proj.weight"), get(p + "self_attn.q_proj.bias"));
+      array k = linear(hn, get(p + "self_attn.k_proj.weight"), get(p + "self_attn.k_proj.bias"));
+      array v = linear(hn, get(p + "self_attn.v_proj.weight"), get(p + "self_attn.v_proj.bias"));
+      q = apply_rope(mx::transpose(mx::reshape(q, {1, L, nH, hd}), {0, 2, 1, 3}), cosA, sinA);
+      k = apply_rope(mx::transpose(mx::reshape(k, {1, L, nKV, hd}), {0, 2, 1, 3}), cosA, sinA);
+      v = mx::transpose(mx::reshape(v, {1, L, nKV, hd}), {0, 2, 1, 3});
+      if (cache.k[l]) {
+        k = mx::concatenate({*cache.k[l], k}, 2);
+        v = mx::concatenate({*cache.v[l], v}, 2);
+      }
+      cache.k[l] = k;
+      cache.v[l] = v;
+      array o = mx::fast::scaled_dot_product_attention(q, k, v, scale, mask);
+      o = linear(mx::reshape(mx::transpose(o, {0, 2, 1, 3}), {1, L, nH * hd}),
+                 get(p + "self_attn.o_proj.weight"));
+      h = mx::add(h, o);
+      array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
+      array gate = linear(h2, get(p + "mlp.gate_proj.weight"));
+      array up = linear(h2, get(p + "mlp.up_proj.weight"));
+      array mlp = linear(mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), up), get(p + "mlp.down_proj.weight"));
+      h = mx::add(h, mlp);
+    }
+    return mx::fast::rms_norm(h, get("model.norm.weight"), cfg.rms_norm_eps);
+  }
+
+  int argmax_logits_of_hidden(const array& h, int row) const {
+    array h_last = mx::take(h, row, 1);  // (1, H)
+    array logits = mx::astype(linear(h_last, get("model.embed_tokens.weight")), mx::float32);
+    mx::eval(logits);
+    const float* p = logits.data<float>();
+    int best = 0;
+    for (int i = 1; i < cfg.vocab_size; ++i)
+      if (p[i] > p[best]) best = i;
+    return best;
+  }
+
+  std::vector<int> generate_cached(const std::vector<int>& ids, const std::vector<float>& image_embeds,
+                                   int n_img, const std::array<int, 3>& grid, int max_new,
+                                   const std::vector<int>& eos_ids) const {
+    int L = static_cast<int>(ids.size());
+    KVCache cache(cfg.num_hidden_layers);
+    // Prefill.
+    array embeds = (n_img > 0) ? build_multimodal_embeds(ids, image_embeds, n_img)
+                               : embed_tokens(ids);
+    PositionIds pos = (n_img > 0) ? get_rope_index(ids, grid) : PositionIds{};
+    if (n_img <= 0) {
+      for (int a = 0; a < 3; ++a) { pos[a].resize(L); for (int t = 0; t < L; ++t) pos[a][t] = t; }
+    }
+    array h = forward_cached(embeds, pos, cache, /*prefill=*/true);
+    int next = argmax_logits_of_hidden(h, L - 1);
+    int next_pos = 0;
+    for (int a = 0; a < 3; ++a) next_pos = std::max(next_pos, pos[a][L - 1]);
+    next_pos += 1;
+
+    std::vector<int> out;
+    for (int step = 0; step < max_new; ++step) {
+      bool is_eos = false;
+      for (int e : eos_ids) if (next == e) is_eos = true;
+      if (is_eos) break;
+      out.push_back(next);
+      // Decode one token.
+      array tok_embed = embed_tokens(std::vector<int>{next});  // (1,1,H)
+      PositionIds dpos;
+      for (int a = 0; a < 3; ++a) dpos[a] = {next_pos};
+      array dh = forward_cached(tok_embed, dpos, cache, /*prefill=*/false);
+      next = argmax_logits_of_hidden(dh, 0);
+      ++next_pos;
+    }
+    return out;
+  }
+
   // Multimodal last-token logits: merge vision embeds into the token stream.
   std::vector<float> mm_last_logits(const std::vector<int>& ids,
                                     const std::vector<float>& image_embeds, int n_img,
@@ -341,20 +432,7 @@ std::vector<int> Qwen2VLModel::generate_multimodal(const std::vector<int>& input
                                                    const std::vector<float>& image_embeds, int n_img,
                                                    const std::array<int, 3>& grid, int max_new_tokens,
                                                    const std::vector<int>& eos_ids) const {
-  std::vector<int> cur = input_ids;
-  std::vector<int> out;
-  for (int step = 0; step < max_new_tokens; ++step) {
-    std::vector<float> logits = impl_->mm_last_logits(cur, image_embeds, n_img, grid);
-    int best = 0;
-    for (int i = 1; i < (int)logits.size(); ++i)
-      if (logits[i] > logits[best]) best = i;
-    bool is_eos = false;
-    for (int e : eos_ids) if (best == e) is_eos = true;
-    if (is_eos) break;
-    out.push_back(best);
-    cur.push_back(best);
-  }
-  return out;
+  return impl_->generate_cached(input_ids, image_embeds, n_img, grid, max_new_tokens, eos_ids);
 }
 
 }  // namespace mineru
