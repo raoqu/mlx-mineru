@@ -44,6 +44,12 @@ Each model family is comparable in size to the Qwen2-VL port. This is the single
 largest remaining task; it advances phase by phase with golden verification.
 
 ## Status
-- P0: onnxruntime selected; layout model downloaded; export script written
-  (`scripts/export_layout_onnx.py`) — validating clean ONNX export (the gate for
-  the whole strategy).
+- **P0 gate PASSED ✅**: PP-DocLayoutV2 (RT-DETR + reading-order) exports to
+  `layout.onnx` (215MB) via `scripts/export_layout_onnx.py`. Validation on a real
+  page: onnxruntime == torch — order_logits max|diff| 2.2e-4, and the
+  **thresholded detections match exactly** (the raw 300-query tensor diff is only
+  tie-broken low-confidence padding rows, which get thresholded out). The
+  `take_along_dim -> gather` monkey-patch was needed for the export (opset 17).
+- **Next (P1)**: vendor onnxruntime C++; C++ layout preprocess (resize 800x800,
+  /255, NCHW) + postprocess (sigmoid, per-class thresholds, box decode + scale to
+  page, geometric reading order) ; golden vs MinerU `PPDocLayoutV2.predict`.
