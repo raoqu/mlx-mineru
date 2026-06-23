@@ -142,6 +142,13 @@ if(HAVE_MLX)
   target_include_directories(mineru_qwen PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_qwen PUBLIC mlx thirdparty_headers)
 
+  # ---- mlx-mineru CLI -------------------------------------------------------
+  if(HAVE_PDFIUM)
+    add_executable(mlx-mineru src/cli/main.cpp)
+    target_link_libraries(mlx-mineru PRIVATE mineru_qwen mineru_vlm mineru_pdf mineru_core)
+    set_target_properties(mlx-mineru PROPERTIES BUILD_RPATH "${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
+  endif()
+
   set(MODEL_ST ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer/model.safetensors)
   if(EXISTS ${MODEL_ST})
     add_executable(test_llm_forward tests/test_llm_forward.cpp)

@@ -16,6 +16,19 @@ and working principles.
 Requires CMake ≥ 3.20 and a C++20 compiler (Apple clang). Header-only dependencies
 (`nlohmann/json`, `CLI11`) are vendored under `third_party/`.
 
+## CLI (early)
+
+```bash
+./build/mlx-mineru -p demo.pdf --page 0 -o layout.json
+```
+
+Renders a PDF page and runs the Qwen2-VL **layout-detection** step natively on
+Apple Silicon (MLX/Metal) — no Python at runtime — emitting the detected document
+structure (block types + bboxes). On a sample page it detects headers/title/body/
+footnotes in reading order. Per-block content extraction → `middle_json` → Markdown
+are the in-progress next steps (see AGENT.md). Note: generation currently uses a
+KV-cache-less path (~38s/page); a KV cache is the next optimization.
+
 ## Status
 
 Under construction, phase by phase (see PLAN.md). Every phase is built, tested, and
