@@ -30,6 +30,12 @@ assembles `middle_json`, and writes MinerU's standard layout
 `output/<name>/vlm/{<name>.md, <name>_content_list.json, <name>_middle.json}`
 via the verified `union_make`.
 
+Content types handled: **text** (with post_process inline/macro/underscore fixes),
+**titles**, **tables** (OTSL → HTML with rowspan/colspan), **equations** (delimiter +
+brace fixes, `$$`-rendered), and **images/charts** (cropped + saved as JPEG, referenced
+via `![](images/…)` with a `<details>` analysis block). Headers/footers/page numbers →
+`discarded_blocks`.
+
 ### HTTP server
 
 ```bash
