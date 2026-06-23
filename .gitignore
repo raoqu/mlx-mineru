@@ -29,3 +29,6 @@ compile_commands.json
 
 # Vendored MLX runtime (large) — fetch via scripts/fetch_mlx.sh
 /third_party/mlx/
+
+# Vendored ONNX Runtime (fetch via scripts/fetch_onnxruntime.sh)
+/third_party/onnxruntime/

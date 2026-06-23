@@ -50,6 +50,11 @@ largest remaining task; it advances phase by phase with golden verification.
   **thresholded detections match exactly** (the raw 300-query tensor diff is only
   tie-broken low-confidence padding rows, which get thresholded out). The
   `take_along_dim -> gather` monkey-patch was needed for the export (opset 17).
-- **Next (P1)**: vendor onnxruntime C++; C++ layout preprocess (resize 800x800,
+- **P1 foundation ✅**: ONNX Runtime C++ vendored (dylib from pip package,
+  headers from v1.26.0 tag; `scripts/fetch_onnxruntime.sh`). CMake imported
+  `onnxruntime` target. `ctest onnx_smoke` loads `layout.onnx` in C++ and runs it
+  — output shapes correct (logits 1x300x25, pred_boxes 1x300x4, order_logits
+  1x300x300). The pipeline runtime path is proven end-to-end in C++.
+- **Next (P1 cont.)**: C++ layout module — preprocess (resize 800x800 bicubic,
   /255, NCHW) + postprocess (sigmoid, per-class thresholds, box decode + scale to
   page, geometric reading order) ; golden vs MinerU `PPDocLayoutV2.predict`.

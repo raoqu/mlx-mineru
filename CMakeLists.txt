@@ -70,6 +70,22 @@ else()
   set(HAVE_MLX FALSE)
 endif()
 
+# ---- ONNX Runtime (C++; pipeline backend) -----------------------------------
+set(ORT_DIR ${CMAKE_SOURCE_DIR}/third_party/onnxruntime)
+if(EXISTS ${ORT_DIR}/lib/libonnxruntime.dylib)
+  add_library(onnxruntime SHARED IMPORTED)
+  file(GLOB _ort_dylib ${ORT_DIR}/lib/libonnxruntime.*.dylib)
+  list(GET _ort_dylib 0 _ort_real)
+  set_target_properties(onnxruntime PROPERTIES
+    IMPORTED_LOCATION ${_ort_real}
+    INTERFACE_INCLUDE_DIRECTORIES ${ORT_DIR}/include)
+  set(HAVE_ORT TRUE)
+  message(STATUS "Found ONNX Runtime at ${ORT_DIR}")
+else()
+  message(WARNING "ONNX Runtime not found; run scripts/fetch_onnxruntime.sh. Pipeline targets disabled.")
+  set(HAVE_ORT FALSE)
+endif()
+
 # ---- Core library ------------------------------------------------------------
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
@@ -212,4 +228,14 @@ if(HAVE_MLX)
   else()
     message(STATUS "model weights not present; llm_forward test disabled (run scripts/fetch_weights.sh)")
   endif()
+endif()
+
+# ---- ONNX Runtime smoke test (pipeline) -------------------------------------
+if(HAVE_ORT AND EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
+  add_executable(test_onnx_smoke tests/test_onnx_smoke.cpp)
+  target_include_directories(test_onnx_smoke PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  target_link_libraries(test_onnx_smoke PRIVATE onnxruntime)
+  set_target_properties(test_onnx_smoke PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
+  add_test(NAME onnx_smoke
+    COMMAND test_onnx_smoke ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
 endif()
