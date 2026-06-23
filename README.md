@@ -4,8 +4,9 @@ C++ native reimplementation of [MinerU](https://github.com/opendatalab/MinerU) `
 document parsing (PDF / image / Office → Markdown / JSON), **with no Python runtime**,
 MLX/Metal-accelerated on Apple Silicon.
 
-See [GOAL.md](GOAL.md), [PLAN.md](PLAN.md), and [AGENT.md](AGENT.md) for scope, plan,
-and working principles.
+See [USAGE.md](USAGE.md) for full run commands, the HTTP API, and model/dependency
+files. See [GOAL.md](GOAL.md), [PLAN.md](PLAN.md), and [AGENT.md](AGENT.md) for scope,
+plan, and working principles.
 
 ## Build & test
 
