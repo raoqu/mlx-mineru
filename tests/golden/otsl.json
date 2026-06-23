@@ -1,0 +1,32 @@
+{
+  "samples": [
+    {
+      "otsl": "<fcel>A<fcel>B<fcel>C<nl><fcel>1<fcel>2<fcel>3<nl>",
+      "html": "<table><tr><td>A</td><td>B</td><td>C</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>"
+    },
+    {
+      "otsl": "<fcel>Header<lcel><nl><fcel>a<fcel>b<nl>",
+      "html": "<table><tr><td colspan=\"2\">Header</td></tr><tr><td>a</td><td>b</td></tr></table>"
+    },
+    {
+      "otsl": "<fcel>Top<fcel>X<nl><ucel><fcel>Y<nl>",
+      "html": "<table><tr><td rowspan=\"2\">Top</td><td>X</td></tr><tr><td>Y</td></tr></table>"
+    },
+    {
+      "otsl": "<fcel>Span<lcel><nl><ucel><xcel><nl>",
+      "html": "<table><tr><td rowspan=\"2\" colspan=\"2\">Span</td></tr><tr></tr></table>"
+    },
+    {
+      "otsl": "<fcel>only<nl>",
+      "html": "<table><tr><td>only</td></tr></table>"
+    },
+    {
+      "otsl": "<ecel><fcel>b<nl><fcel>c<fcel>d<nl>",
+      "html": "<table><tr><td></td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>"
+    },
+    {
+      "otsl": "<table><tr><td>passthrough</td></tr></table>",
+      "html": "<table><tr><td>passthrough</td></tr></table>"
+    }
+  ]
+}

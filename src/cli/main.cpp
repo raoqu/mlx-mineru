@@ -18,6 +18,7 @@
 #include "mineru/enums.hpp"
 #include "mineru/image_preprocess.hpp"
 #include "mineru/mkcontent.hpp"
+#include "mineru/otsl.hpp"
 #include "mineru/pdf.hpp"
 #include "mineru/qwen2_vl.hpp"
 #include "mineru/tokenizer.hpp"
@@ -147,10 +148,13 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
       pb = {{"type", bt::kTitle}, {"level", 1}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
             {"index", index}, {"lines", text_lines(content, bb)}};
     } else if (b.type == "table") {
+      // Model emits OTSL for tables; convert to HTML (post_process simple_process).
+      std::string html = mineru::convert_otsl_to_html(content);
+      if (html.empty()) html = content;
       pb = {{"type", bt::kTable}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
             {"blocks", json::array({{{"type", bt::kTableBody}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                 {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
-                    {"spans", json::array({{{"type", ct::kTable}, {"html", content}}})}}})}}})}};
+                    {"spans", json::array({{{"type", ct::kTable}, {"html", html}}})}}})}}})}};
     } else if (b.type == "equation" || b.type == "equation_block") {
       pb = {{"type", bt::kInterlineEquation}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
             {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
