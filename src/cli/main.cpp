@@ -33,6 +33,19 @@ namespace ct = mineru::content_type;
 
 static const std::vector<int> kEos = {151645, 151643};
 
+// Detailed phase profiler (printed at end of a one-shot CLI run).
+struct Prof {
+  double load = 0, raster = 0, layout_vision = 0, layout_gen = 0, content_vision = 0,
+         content_gen = 0, assembly = 0;
+  long layout_tok = 0, content_tok = 0;
+  int pages = 0, blocks = 0;
+};
+static Prof g_prof;
+using Clock = std::chrono::steady_clock;
+static double secs(Clock::time_point a, Clock::time_point b) {
+  return std::chrono::duration<double>(b - a).count();
+}
+
 // Build a Qwen2-VL chat prompt: system + user(image + instruction) + assistant.
 static std::vector<int> build_prompt(const mineru::Qwen2Tokenizer& tok, int n_img, int pad_id,
                                      const std::string& instruction) {
@@ -97,10 +110,17 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
   std::vector<uint8_t> resized = mineru::resize_bicubic_rgb8(pg.rgb, pg.width, pg.height, 1036, 1036);
   mineru::VisionInput vi = mineru::preprocess_image(resized, 1036, 1036);
   int n_img = vi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
+  auto _lv0 = Clock::now();
   std::vector<float> lembeds = model.forward_vision(vi.pixel_values, vi.grid_thw);
+  auto _lv1 = Clock::now();
   std::vector<int> lprompt = build_prompt(tok, n_img, cfg.image_token_id, "\nLayout Detection:");
   std::vector<int> lgen = model.generate_multimodal(lprompt, lembeds, n_img, vi.grid_thw, 1200, kEos);
+  g_prof.layout_vision += secs(_lv0, _lv1);
+  g_prof.layout_gen += secs(_lv1, Clock::now());
+  g_prof.layout_tok += (long)lgen.size();
   std::vector<mineru::ContentBlock> blocks = mineru::parse_layout_output(tok.decode(lgen, false));
+  g_prof.pages += 1;
+  g_prof.blocks += (int)blocks.size();
   std::cerr << "[mlx-mineru] page " << page_idx << ": " << blocks.size() << " blocks\n";
   if (layout_out) *layout_out = blocks;
   if (layout_only) return json::object();
@@ -132,7 +152,9 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
     mineru::VisionInput cvi = mineru::preprocess_image(crop, j.cw, j.ch);
     nimgs[i] = cvi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
     grids[i] = cvi.grid_thw;
+    auto _cv0 = Clock::now();
     embeds[i] = model.forward_vision(cvi.pixel_values, cvi.grid_thw);
+    g_prof.content_vision += secs(_cv0, Clock::now());
     std::string instr = discard ? "\nText Recognition:" : instruction_for(b.type);
     prompts[i] = build_prompt(tok, nimgs[i], cfg.image_token_id, instr);
   }
@@ -147,6 +169,7 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
             [&](int a, int b) { return prompts[a].size() < prompts[b].size(); });
   std::cerr << "[mlx-mineru]  batched generation over " << blocks.size() << " blocks (groups of "
             << kBatch << ") ...\n";
+  auto _cg0 = Clock::now();
   for (size_t off = 0; off < order.size(); off += kBatch) {
     size_t end = std::min(order.size(), off + kBatch);
     std::vector<std::vector<int>> bp, be_ids;
@@ -163,6 +186,8 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
     auto out = model.generate_multimodal_batch(bp, be, bn, bg, 2048, kEos);
     for (size_t k = off; k < end; ++k) gens[order[k]] = std::move(out[k - off]);
   }
+  g_prof.content_gen += secs(_cg0, Clock::now());
+  for (auto& g : gens) g_prof.content_tok += (long)g.size();
 
   // Pass 3: decode + assemble.
   int index = 0;
@@ -334,10 +359,13 @@ int main(int argc, char** argv) {
     fs::create_directories(images_dir);
   }
 
+  g_prof.load = std::chrono::duration<double>(t_loaded - t0).count();
   json pdf_info = json::array();
   json layout_json = json::array();
   for (int p = s; p <= e; ++p) {
+    auto _r0 = Clock::now();
     mineru::PageImage pg = doc.render_page(p);
+    g_prof.raster += secs(_r0, Clock::now());
     std::vector<mineru::ContentBlock> blocks;
     json page_info = process_page(model, tok, pg, p, layout_only, &blocks, images_dir, batch_size);
     if (layout_only) {
@@ -358,6 +386,7 @@ int main(int argc, char** argv) {
     std::cerr << "[mlx-mineru] wrote " << (dir / fname).string() << "\n";
   };
 
+  auto _a0 = Clock::now();
   if (layout_only) {
     write(stem + "_layout.json", layout_json.dump(2));
   } else {
@@ -369,9 +398,40 @@ int main(int argc, char** argv) {
     write(stem + "_content_list.json", content_list.dump(4));
     write(stem + "_middle.json", middle.dump(4));
   }
+  g_prof.assembly += secs(_a0, Clock::now());
 
   auto t1 = std::chrono::steady_clock::now();
-  std::cerr << "[mlx-mineru] inference in " << std::chrono::duration<double>(t1 - t_loaded).count()
-            << "s; total " << std::chrono::duration<double>(t1 - t0).count() << "s\n";
+  double infer = std::chrono::duration<double>(t1 - t_loaded).count();
+  std::cerr << "[mlx-mineru] inference in " << infer << "s; total "
+            << std::chrono::duration<double>(t1 - t0).count() << "s\n";
+
+  // ---- Detailed phase breakdown -------------------------------------------
+  auto& P = g_prof;
+  double wall = std::chrono::duration<double>(t1 - t0).count();
+  auto row = [&](const char* name, double s, const std::string& extra = "") {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "  %-22s %7.2fs  %5.1f%%   %s", name, s,
+                  wall > 0 ? 100.0 * s / wall : 0.0, extra.c_str());
+    std::cerr << buf << "\n";
+  };
+  auto tps = [](long t, double s) {
+    char b[64];
+    std::snprintf(b, sizeof(b), "%ld tok, %.0f tok/s", t, s > 0 ? t / s : 0.0);
+    return std::string(b);
+  };
+  std::cerr << "\n=== profile (" << P.pages << " page(s), " << P.blocks << " blocks) ===\n";
+  std::cerr << "  phase                    time    share   detail\n";
+  row("model load", P.load, "weights mmap + quantize");
+  row("pdf rasterize", P.raster, "pdfium");
+  row("layout: vision", P.layout_vision, "page ViT encode");
+  row("layout: generate", P.layout_gen, tps(P.layout_tok, P.layout_gen));
+  row("content: vision", P.content_vision, std::to_string(P.blocks) + " crops ViT encode");
+  row("content: generate", P.content_gen, tps(P.content_tok, P.content_gen));
+  row("output assembly", P.assembly, "union_make + write");
+  double accounted = P.load + P.raster + P.layout_vision + P.layout_gen + P.content_vision +
+                     P.content_gen + P.assembly;
+  row("other/overhead", wall - accounted, "tokenize, json, crops, sync");
+  std::cerr << "  ----------------------------------------------\n";
+  row("TOTAL (wall)", wall);
   return 0;
 }
