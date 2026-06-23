@@ -144,6 +144,12 @@ if(HAVE_MLX)
     set_target_properties(test_llm_forward PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
     add_test(NAME llm_forward
       COMMAND test_llm_forward ${MODEL_ST} ${CMAKE_SOURCE_DIR}/tests/golden/llm.json)
+
+    add_executable(test_vision tests/test_vision.cpp)
+    target_include_directories(test_vision PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_vision PRIVATE mineru_qwen mineru_vlm)
+    set_target_properties(test_vision PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
+    add_test(NAME vision COMMAND test_vision ${MODEL_ST} ${CMAKE_SOURCE_DIR}/tests/golden)
   else()
     message(STATUS "model weights not present; llm_forward test disabled (run scripts/fetch_weights.sh)")
   endif()

@@ -29,6 +29,15 @@ struct Qwen2VLConfig {
   int vision_start_token_id = 151652;
   int spatial_merge_size = 2;
   int head_dim() const { return hidden_size / num_attention_heads; }
+  // vision_config
+  int v_embed_dim = 1280;
+  int v_depth = 32;
+  int v_num_heads = 16;
+  int v_patch_size = 14;
+  int v_temporal_patch_size = 2;
+  int v_mlp_ratio = 4;
+  float v_rope_theta = 10000.0f;
+  int v_head_dim() const { return v_embed_dim / v_num_heads; }  // 80
 };
 
 // 3D MRoPE position ids, shape [3][seq].
@@ -49,6 +58,11 @@ class Qwen2VLModel {
 
   // Greedy-decode the argmax next-token id for `tokens` (text-only).
   int argmax_next(const std::vector<int>& tokens) const;
+
+  // Vision tower: pixel_values [seq*1176] (row-major, seq = t*h*w patches) and
+  // grid (t,h,w). Returns merged image embeds, flattened [seq/merge^2, hidden_size].
+  std::vector<float> forward_vision(const std::vector<float>& pixel_values,
+                                    const std::array<int, 3>& grid) const;
 
  private:
   Qwen2VLModel();
