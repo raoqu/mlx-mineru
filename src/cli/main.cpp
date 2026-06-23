@@ -20,6 +20,7 @@
 #include "mineru/mkcontent.hpp"
 #include "mineru/otsl.hpp"
 #include "mineru/pdf.hpp"
+#include "mineru/post_process.hpp"
 #include "mineru/qwen2_vl.hpp"
 #include "mineru/tokenizer.hpp"
 #include "mineru/vlm_layout.hpp"
@@ -159,12 +160,13 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
                 {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                     {"spans", json::array({{{"type", ct::kTable}, {"html", html}}})}}})}}})}};
     } else if (b.type == "equation" || b.type == "equation_block") {
+      std::string latex = mineru::pp::process_equation(content);
       pb = {{"type", bt::kInterlineEquation}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
             {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
-                {"spans", json::array({{{"type", ct::kInterlineEquation}, {"content", content}}})}}})}};
+                {"spans", json::array({{{"type", ct::kInterlineEquation}, {"content", latex}}})}}})}};
     } else {
       pb = {{"type", bt::kText}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
-            {"lines", text_lines(content, bb)}};
+            {"lines", text_lines(mineru::pp::process_text(content), bb)}};
     }
     para_blocks.push_back(pb);
     ++index;

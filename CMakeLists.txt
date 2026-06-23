@@ -107,6 +107,7 @@ add_library(mineru_vlm STATIC
   src/vlm/image_preprocess.cpp
   src/vlm/vlm_layout.cpp
   src/vlm/otsl.cpp
+  src/vlm/post_process.cpp
 )
 target_include_directories(mineru_vlm
   PUBLIC ${CMAKE_SOURCE_DIR}/include
@@ -134,6 +135,11 @@ add_executable(test_otsl tests/test_otsl.cpp)
 target_include_directories(test_otsl PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(test_otsl PRIVATE mineru_vlm)
 add_test(NAME otsl COMMAND test_otsl ${CMAKE_SOURCE_DIR}/tests/golden/otsl.json)
+
+add_executable(test_post_process tests/test_post_process.cpp)
+target_include_directories(test_post_process PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_post_process PRIVATE mineru_vlm)
+add_test(NAME post_process COMMAND test_post_process ${CMAKE_SOURCE_DIR}/tests/golden/post_process.json)
 
 # ---- MLX smoke test ---------------------------------------------------------
 if(HAVE_MLX)

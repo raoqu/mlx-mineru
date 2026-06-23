@@ -1,0 +1,76 @@
+{
+  "display_to_inline": [
+    {
+      "in": "(B) \\[ \\begin{pmatrix}2&-1\\\\-1&2\\end{pmatrix}. \\]",
+      "out": "(B) \\( \\begin{pmatrix}2&-1\\\\-1&2\\end{pmatrix}. \\)"
+    },
+    {
+      "in": "eq \\[ 12, 13–15 \\] and \\[ x+y \\]",
+      "out": "eq \\[ 12, 13–15 \\] and \\( x+y \\)"
+    },
+    {
+      "in": "see \\[10\\]",
+      "out": "see \\[10\\]"
+    }
+  ],
+  "macro_spacing": [
+    {
+      "in": "abcdf \\( a \\timesX b \\) asdadfads",
+      "out": "abcdf \\( a \\times X b \\) asdadfads"
+    },
+    {
+      "in": "\\( x \\in Y \\) and \\( \\top Z \\)",
+      "out": "\\( x \\in Y \\) and \\( \\top Z \\)"
+    },
+    {
+      "in": "\\( a \\toX \\) \\( \\top p\\)",
+      "out": "\\( a \\to X \\) \\( \\top p\\)"
+    }
+  ],
+  "move_underscores": [
+    {
+      "in": "xxx = \\( \\sigma ___ = \\lambda \\)",
+      "out": "xxx = \\( \\sigma \\) ___ \\( = \\lambda \\)"
+    },
+    {
+      "in": "fill \\( ____ \\) here",
+      "out": "fill ____ here"
+    },
+    {
+      "in": "\\( a + b \\) no underscores",
+      "out": "\\( a + b \\) no underscores"
+    }
+  ],
+  "eq_delim": [
+    {
+      "in": "\\[a \\coloneqq b\\]",
+      "out": "a \\coloneqq b"
+    },
+    {
+      "in": "  \\[ x+y \\] ",
+      "out": "x+y"
+    },
+    {
+      "in": "no delim",
+      "out": "no delim"
+    }
+  ],
+  "unbalanced": [
+    {
+      "in": "a{b}c",
+      "out": "a{b}c"
+    },
+    {
+      "in": "a{b{c}",
+      "out": "ab{c}"
+    },
+    {
+      "in": "\\{ x }{ y",
+      "out": "\\{ x  y"
+    },
+    {
+      "in": "x}y{z",
+      "out": "xyz"
+    }
+  ]
+}
