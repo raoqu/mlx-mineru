@@ -87,7 +87,8 @@
 - 🎯 **PDF→Markdown 进度**：栅格化(P3 ✅)→图像预处理(4c ✅)→Qwen2-VL 全模型 MLX C++(LLM✅/视觉✅/多模态✅，均已验证)→版面解析(4e-layout ✅)→[**剩余**：两步抽取编排+KV cache、每块内容抽取、post_process、MagicModel→middle_json、CLI]→union_make(P1 ✅)。
 - **CLI ✅ PDF→Markdown 端到端跑通**：`src/cli/main.cpp` → `build/mlx-mineru`。`-p PDF --page N -o out.md`：渲染→layout 检测→**逐块裁剪+按类型 prompt 抽内容（两步抽取 step2）**→组装 middle_json→`union_make`→Markdown。`--layout-only` 仅输出版面 JSON。**实测 demo1.pdf p0：~9s 产出高质量 Markdown**（标题成 #、作者带行内 LaTeX 上标、`# Abstract`、含行内公式的摘要、Keywords）。零 Python。
 - **KV cache ✅**：`forward_cached`/`generate_cached`（prefill+逐 token 解码），layout 由 38.3s→3.2s（~12×），输出一致。
-- **剩余保真工作（非阻塞，已可用）**：(1) MagicModel(`vlm_magic_model.py` 856 行) 完整块归类/caption 关联/span 截图（当前简化：header/footer/page_number/page_footnote/aside→discarded，其余按主类型）；(2) `post_process/*`（otsl2html 表格、公式修复、cross-page table）；(3) image/chart 存图+image_path；(4) 多页/批处理、`--server` HTTP API、`content_list` 输出；(5) 与 MinerU Python 逐字节对齐（需可跑其 VLM）。
+- **多页 + 标准输出 + 服务器 ✅**：`-s/-e` 页范围；输出 MinerU 布局 `output/<name>/vlm/{.md,_content_list.json,_middle.json}`（均出自已验证 union_make）。`--server`（vendored cpp-httplib）：`GET /health`、`POST /file_parse`（PDF body 或 multipart files）→ `{md_content, content_list}`。实测通过。
+- **剩余保真工作（非阻塞，已可用）**：(1) MagicModel(`vlm_magic_model.py` 856 行) 完整块归类/caption 关联/span 截图（当前简化：header/footer/page_number/page_footnote/aside→discarded，其余按主类型；title level 固定 1）；(2) `post_process/*`（otsl2html 表格、公式修复、cross-page table）；(3) image/chart 存图+image_path；(4) 与 MinerU Python 逐字节对齐（需可跑其 VLM）；(5) office/pipeline 后端（P2/P7，低优先）。
 
 ## 参考样本
 `~/research/MinerU/demo/`：`pdfs/{demo1,demo2,demo3,small_ocr}.pdf`、`office_docs/{docx_01.docx,pptx_01.pptx,xlsx_01.xlsx}`——用作 golden 对比输入。

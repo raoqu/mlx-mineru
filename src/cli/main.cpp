@@ -11,7 +11,10 @@
 #include <iostream>
 #include <string>
 
+#include <mutex>
+
 #include "CLI11/CLI11.hpp"
+#include "httplib/httplib.h"
 #include "mineru/enums.hpp"
 #include "mineru/image_preprocess.hpp"
 #include "mineru/mkcontent.hpp"
@@ -164,17 +167,82 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
           {"para_blocks", para_blocks}, {"discarded_blocks", discarded}};
 }
 
+// Convert an open PDF document (page range) -> pdf_info (middle_json pages).
+static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
+                             mineru::PdfDocument& doc, int start_page, int end_page) {
+  int npages = doc.page_count();
+  int s = std::clamp(start_page, 0, npages - 1);
+  int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
+  json pdf_info = json::array();
+  for (int p = s; p <= e; ++p) {
+    mineru::PageImage pg = doc.render_page(p);
+    pdf_info.push_back(process_page(model, tok, pg, p, /*layout_only=*/false));
+  }
+  return pdf_info;
+}
+
+// Minimal HTTP API (aligns loosely with cli/fast_api.py): GET /health,
+// POST /file_parse (raw PDF body or multipart "files") -> {md, content_list}.
+static int run_server(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
+                      const std::string& host, int port) {
+  httplib::Server srv;
+  static std::mutex infer_mtx;  // serialize model use across requests
+
+  srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
+    res.set_content("{\"status\":\"ok\"}", "application/json");
+  });
+
+  srv.Post("/file_parse", [&](const httplib::Request& req, httplib::Response& res) {
+    std::string pdf;
+    if (req.is_multipart_form_data() && req.form.has_file("files")) {
+      pdf = req.form.get_file("files").content;
+    } else {
+      pdf = req.body;
+    }
+    if (pdf.size() < 5 || pdf.compare(0, 5, "%PDF-") != 0) {
+      res.status = 400;
+      res.set_content("{\"error\":\"expected a PDF body or multipart 'files'\"}", "application/json");
+      return;
+    }
+    try {
+      std::lock_guard<std::mutex> lock(infer_mtx);
+      std::vector<uint8_t> bytes(pdf.begin(), pdf.end());
+      mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
+      json pdf_info = convert_document(model, tok, doc, 0, -1);
+      std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+      json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+      json out = {{"md_content", md}, {"content_list", content_list}};
+      res.set_content(out.dump(), "application/json");
+    } catch (const std::exception& ex) {
+      res.status = 500;
+      res.set_content(std::string("{\"error\":\"") + ex.what() + "\"}", "application/json");
+    }
+  });
+
+  std::cerr << "[mlx-mineru] serving on http://" << host << ":" << port
+            << "  (GET /health, POST /file_parse)\n";
+  if (!srv.listen(host, port)) {
+    std::cerr << "[mlx-mineru] failed to bind " << host << ":" << port << "\n";
+    return 1;
+  }
+  return 0;
+}
+
 int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
-  int start_page = 0, end_page = -1;
-  bool layout_only = false;
-  app.add_option("-p,--path", pdf_path, "Input PDF path")->required();
+  std::string host = "127.0.0.1";
+  int start_page = 0, end_page = -1, port = 8000;
+  bool layout_only = false, server = false;
+  app.add_option("-p,--path", pdf_path, "Input PDF path (not needed with --server)");
   app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
   app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
   app.add_option("-e,--end", end_page, "Last 0-based page inclusive (default: last)");
   app.add_option("-o,--output", out_dir, "Output directory (MinerU layout: <out>/<name>/vlm/)");
   app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON");
+  app.add_flag("--server", server, "Run the HTTP API server instead of a one-shot conversion");
+  app.add_option("--host", host, "Server bind host (default 127.0.0.1)");
+  app.add_option("--port", port, "Server port (default 8000)");
   CLI11_PARSE(app, argc, argv);
 
   auto t0 = std::chrono::steady_clock::now();
@@ -182,6 +250,9 @@ int main(int argc, char** argv) {
   mineru::Qwen2Tokenizer tok = mineru::Qwen2Tokenizer::load(model_dir);
   mineru::Qwen2VLModel model = mineru::Qwen2VLModel::load(model_dir + "/model.safetensors");
 
+  if (server) return run_server(model, tok, host, port);
+
+  if (pdf_path.empty()) { std::cerr << "--path is required (or use --server)\n"; return 2; }
   mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);
   int npages = doc.page_count();
   int s = std::clamp(start_page, 0, npages - 1);

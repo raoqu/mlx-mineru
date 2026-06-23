@@ -30,6 +30,17 @@ assembles `middle_json`, and writes MinerU's standard layout
 `output/<name>/vlm/{<name>.md, <name>_content_list.json, <name>_middle.json}`
 via the verified `union_make`.
 
+### HTTP server
+
+```bash
+./build/mlx-mineru --server --port 8000
+curl localhost:8000/health
+curl -X POST --data-binary @doc.pdf localhost:8000/file_parse   # -> {md_content, content_list}
+```
+
+`--server` exposes `GET /health` and `POST /file_parse` (raw PDF body or multipart
+`files`), returning the Markdown + content_list as JSON.
+
 On a real paper page it produces a clean Markdown document — title as a heading,
 authors with inline LaTeX (`\( ^{a,c} \)`), an `# Abstract` section with inline
 equations (`\( N_{zero} \)`), and keywords — in **~9s/page** (KV-cached). Block
