@@ -32,11 +32,51 @@ array rotate_half(const array& x) {
 struct Qwen2VLModel::Impl {
   Qwen2VLConfig cfg;
   std::unordered_map<std::string, array> w;
+  // Quantized LLM weights: name -> {w_q (uint32), scales, biases}.
+  std::unordered_map<std::string, std::vector<array>> qw;
 
   const array& get(const std::string& name) const {
     auto it = w.find(name);
     if (it == w.end()) throw std::runtime_error("qwen2_vl: missing weight " + name);
     return it->second;
+  }
+
+  bool is_quantized(const std::string& name) const { return qw.find(name) != qw.end(); }
+
+  // Quantize the decoder linear weights + tied embeddings to cfg.quantize_bits.
+  void maybe_quantize() {
+    if (cfg.quantize_bits <= 0) return;
+    std::vector<std::string> names = {"model.embed_tokens.weight"};
+    for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+      std::string p = "model.layers." + std::to_string(l) + ".";
+      for (const char* s : {"self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
+                            "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"})
+        names.push_back(p + s + ".weight");
+    }
+    // NOTE: the vision tower is deliberately NOT quantized — it is compute-bound
+    // (large matmuls over many patches), so quantized_matmul is slower there than
+    // bf16. Only the LLM decoder (memory-bandwidth bound per token) benefits.
+    for (const auto& n : names) {
+      auto it = w.find(n);
+      if (it == w.end()) continue;
+      std::vector<array> q = mx::quantize(it->second, cfg.q_group_size, cfg.quantize_bits);
+      mx::eval(q);          // realize, then drop the bf16 copy to free memory
+      qw.emplace(n, std::move(q));
+      w.erase(it);
+    }
+  }
+
+  // Linear by weight name: quantized_matmul if the weight is quantized, else dense.
+  array linear_w(const array& x, const std::string& wname, const std::string& bname = "") const {
+    array y = [&] {
+      auto it = qw.find(wname);
+      if (it != qw.end())
+        return mx::quantized_matmul(x, it->second[0], it->second[1], it->second[2],
+                                    /*transpose=*/true, cfg.q_group_size, cfg.quantize_bits);
+      return mx::matmul(x, mx::transpose(get(wname)));
+    }();
+    if (!bname.empty()) y = mx::add(y, get(bname));
+    return y;
   }
 
   // Build (cos, sin) of shape (1,1,L,head_dim) in bf16 from 3D position ids.
@@ -78,6 +118,12 @@ struct Qwen2VLModel::Impl {
     int L = static_cast<int>(tokens.size());
     std::vector<int> tok = tokens;
     array idx(tok.data(), mx::Shape{L}, mx::int32);
+    auto it = qw.find("model.embed_tokens.weight");
+    if (it != qw.end()) {  // gather quantized rows, then dequantize
+      array rows = mx::dequantize(mx::take(it->second[0], idx, 0), mx::take(it->second[1], idx, 0),
+                                  mx::take(it->second[2], idx, 0), cfg.q_group_size, cfg.quantize_bits);
+      return mx::reshape(rows, {1, L, cfg.hidden_size});
+    }
     return mx::reshape(mx::take(get("model.embed_tokens.weight"), idx, 0), {1, L, cfg.hidden_size});
   }
 
@@ -127,9 +173,9 @@ struct Qwen2VLModel::Impl {
       std::string p = "model.layers." + std::to_string(l) + ".";
       array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
 
-      array q = linear(hn, get(p + "self_attn.q_proj.weight"), get(p + "self_attn.q_proj.bias"));
-      array k = linear(hn, get(p + "self_attn.k_proj.weight"), get(p + "self_attn.k_proj.bias"));
-      array v = linear(hn, get(p + "self_attn.v_proj.weight"), get(p + "self_attn.v_proj.bias"));
+      array q = linear_w(hn, p + "self_attn.q_proj.weight", p + "self_attn.q_proj.bias");
+      array k = linear_w(hn, p + "self_attn.k_proj.weight", p + "self_attn.k_proj.bias");
+      array v = linear_w(hn, p + "self_attn.v_proj.weight", p + "self_attn.v_proj.bias");
 
       q = mx::transpose(mx::reshape(q, {1, L, nH, hd}), {0, 2, 1, 3});
       k = mx::transpose(mx::reshape(k, {1, L, nKV, hd}), {0, 2, 1, 3});
@@ -140,14 +186,14 @@ struct Qwen2VLModel::Impl {
 
       array o = mx::fast::scaled_dot_product_attention(q, k, v, scale, "causal");
       o = mx::reshape(mx::transpose(o, {0, 2, 1, 3}), {1, L, nH * hd});
-      o = linear(o, get(p + "self_attn.o_proj.weight"));
+      o = linear_w(o, p + "self_attn.o_proj.weight");
       h = mx::add(h, o);
 
       array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
-      array gate = linear(h2, get(p + "mlp.gate_proj.weight"));
-      array up = linear(h2, get(p + "mlp.up_proj.weight"));
+      array gate = linear_w(h2, p + "mlp.gate_proj.weight");
+      array up = linear_w(h2, p + "mlp.up_proj.weight");
       array silu = mx::multiply(gate, mx::sigmoid(gate));
-      array mlp = linear(mx::multiply(silu, up), get(p + "mlp.down_proj.weight"));
+      array mlp = linear_w(mx::multiply(silu, up), p + "mlp.down_proj.weight");
       h = mx::add(h, mlp);
     }
     return mx::fast::rms_norm(h, get("model.norm.weight"), cfg.rms_norm_eps);
@@ -226,7 +272,7 @@ struct Qwen2VLModel::Impl {
     for (int b = 0; b < cfg.v_depth; ++b) {
       std::string pr = "visual.blocks." + std::to_string(b) + ".";
       array hn = mx::fast::layer_norm(h, get(pr + "norm1.weight"), get(pr + "norm1.bias"), 1e-6f);
-      array qkv = linear(hn, get(pr + "attn.qkv.weight"), get(pr + "attn.qkv.bias"));  // (seq, 3*ed)
+      array qkv = linear_w(hn, pr + "attn.qkv.weight", pr + "attn.qkv.bias");  // (seq, 3*ed)
       qkv = mx::reshape(qkv, {seq, 3, nH, hd});
       array q = mx::squeeze(mx::slice(qkv, {0, 0, 0, 0}, {seq, 1, nH, hd}), 1);  // (seq,nH,hd)
       array k = mx::squeeze(mx::slice(qkv, {0, 1, 0, 0}, {seq, 2, nH, hd}), 1);
@@ -239,14 +285,14 @@ struct Qwen2VLModel::Impl {
       v = mx::expand_dims(mx::transpose(v, {1, 0, 2}), 0);
       array o = mx::fast::scaled_dot_product_attention(q, k, v, scale, "");  // full attn
       o = mx::reshape(mx::transpose(mx::squeeze(o, 0), {1, 0, 2}), {seq, ed});
-      o = linear(o, get(pr + "attn.proj.weight"), get(pr + "attn.proj.bias"));
+      o = linear_w(o, pr + "attn.proj.weight", pr + "attn.proj.bias");
       h = mx::add(h, o);
 
       array h2 = mx::fast::layer_norm(h, get(pr + "norm2.weight"), get(pr + "norm2.bias"), 1e-6f);
-      array fc1 = linear(h2, get(pr + "mlp.fc1.weight"), get(pr + "mlp.fc1.bias"));
+      array fc1 = linear_w(h2, pr + "mlp.fc1.weight", pr + "mlp.fc1.bias");
       // quick_gelu: x * sigmoid(1.702 x)
       array act = mx::multiply(fc1, mx::sigmoid(mx::multiply(fc1, array(1.702f))));
-      array fc2 = linear(act, get(pr + "mlp.fc2.weight"), get(pr + "mlp.fc2.bias"));
+      array fc2 = linear_w(act, pr + "mlp.fc2.weight", pr + "mlp.fc2.bias");
       h = mx::add(h, fc2);
     }
 
@@ -254,11 +300,11 @@ struct Qwen2VLModel::Impl {
     array m = mx::fast::layer_norm(h, get("visual.merger.ln_q.weight"), get("visual.merger.ln_q.bias"), 1e-6f);
     int merged = seq / (ms * ms);
     m = mx::reshape(m, {merged, ed * ms * ms});
-    m = linear(m, get("visual.merger.mlp.0.weight"), get("visual.merger.mlp.0.bias"));
+    m = linear_w(m, "visual.merger.mlp.0.weight", "visual.merger.mlp.0.bias");
     // exact GELU
     array gelu = mx::multiply(mx::multiply(m, array(0.5f)),
                               mx::add(array(1.0f), mx::erf(mx::divide(m, array(std::sqrt(2.0f))))));
-    m = linear(gelu, get("visual.merger.mlp.2.weight"), get("visual.merger.mlp.2.bias"));
+    m = linear_w(gelu, "visual.merger.mlp.2.weight", "visual.merger.mlp.2.bias");
     m = mx::astype(m, mx::float32);
     mx::eval(m);
     const float* dp = m.data<float>();
@@ -270,7 +316,7 @@ struct Qwen2VLModel::Impl {
     array h = forward_hidden(tokens, pos);
     array h_last = mx::take(h, L - 1, /*axis=*/1);  // (1, H)
     // tied embeddings: logits = h_last @ embed_tokens.weight.T
-    array logits = linear(h_last, get("model.embed_tokens.weight"));  // (1, vocab)
+    array logits = linear_w(h_last, "model.embed_tokens.weight");  // (1, vocab)
     logits = mx::astype(logits, mx::float32);
     mx::eval(logits);
     const float* p = logits.data<float>();
@@ -296,9 +342,9 @@ struct Qwen2VLModel::Impl {
     for (int l = 0; l < cfg.num_hidden_layers; ++l) {
       std::string p = "model.layers." + std::to_string(l) + ".";
       array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
-      array q = linear(hn, get(p + "self_attn.q_proj.weight"), get(p + "self_attn.q_proj.bias"));
-      array k = linear(hn, get(p + "self_attn.k_proj.weight"), get(p + "self_attn.k_proj.bias"));
-      array v = linear(hn, get(p + "self_attn.v_proj.weight"), get(p + "self_attn.v_proj.bias"));
+      array q = linear_w(hn, p + "self_attn.q_proj.weight", p + "self_attn.q_proj.bias");
+      array k = linear_w(hn, p + "self_attn.k_proj.weight", p + "self_attn.k_proj.bias");
+      array v = linear_w(hn, p + "self_attn.v_proj.weight", p + "self_attn.v_proj.bias");
       q = apply_rope(mx::transpose(mx::reshape(q, {1, L, nH, hd}), {0, 2, 1, 3}), cosA, sinA);
       k = apply_rope(mx::transpose(mx::reshape(k, {1, L, nKV, hd}), {0, 2, 1, 3}), cosA, sinA);
       v = mx::transpose(mx::reshape(v, {1, L, nKV, hd}), {0, 2, 1, 3});
@@ -309,13 +355,13 @@ struct Qwen2VLModel::Impl {
       cache.k[l] = k;
       cache.v[l] = v;
       array o = mx::fast::scaled_dot_product_attention(q, k, v, scale, mask);
-      o = linear(mx::reshape(mx::transpose(o, {0, 2, 1, 3}), {1, L, nH * hd}),
-                 get(p + "self_attn.o_proj.weight"));
+      o = linear_w(mx::reshape(mx::transpose(o, {0, 2, 1, 3}), {1, L, nH * hd}),
+                 p + "self_attn.o_proj.weight");
       h = mx::add(h, o);
       array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
-      array gate = linear(h2, get(p + "mlp.gate_proj.weight"));
-      array up = linear(h2, get(p + "mlp.up_proj.weight"));
-      array mlp = linear(mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), up), get(p + "mlp.down_proj.weight"));
+      array gate = linear_w(h2, p + "mlp.gate_proj.weight");
+      array up = linear_w(h2, p + "mlp.up_proj.weight");
+      array mlp = linear_w(mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), up), p + "mlp.down_proj.weight");
       h = mx::add(h, mlp);
     }
     return mx::fast::rms_norm(h, get("model.norm.weight"), cfg.rms_norm_eps);
@@ -323,7 +369,7 @@ struct Qwen2VLModel::Impl {
 
   int argmax_logits_of_hidden(const array& h, int row) const {
     array h_last = mx::take(h, row, 1);  // (1, H)
-    array logits = mx::astype(linear(h_last, get("model.embed_tokens.weight")), mx::float32);
+    array logits = mx::astype(linear_w(h_last, "model.embed_tokens.weight"), mx::float32);
     mx::eval(logits);
     const float* p = logits.data<float>();
     int best = 0;
@@ -376,7 +422,7 @@ struct Qwen2VLModel::Impl {
     PositionIds pos = get_rope_index(ids, grid);
     h = forward_hidden_from_embeds(h, pos);
     array h_last = mx::take(h, L - 1, 1);
-    array logits = mx::astype(linear(h_last, get("model.embed_tokens.weight")), mx::float32);
+    array logits = mx::astype(linear_w(h_last, "model.embed_tokens.weight"), mx::float32);
     mx::eval(logits);
     const float* p = logits.data<float>();
     return std::vector<float>(p, p + cfg.vocab_size);
@@ -393,6 +439,7 @@ Qwen2VLModel Qwen2VLModel::load(const std::string& weights_path, const Qwen2VLCo
   m.impl_->cfg = cfg;
   auto loaded = mx::load_safetensors(weights_path);
   m.impl_->w = std::move(loaded.first);
+  m.impl_->maybe_quantize();  // no-op unless cfg.quantize_bits > 0
   return m;
 }
 

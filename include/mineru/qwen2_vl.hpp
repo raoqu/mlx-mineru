@@ -24,6 +24,12 @@ struct Qwen2VLConfig {
   float rope_theta = 1000000.0f;
   std::vector<int> mrope_section = {8, 12, 12};
   bool tie_word_embeddings = true;
+  // Weight quantization for the LLM path (the per-token generation bottleneck).
+  // 0 = full bf16 (used by parity tests); 4 or 8 = 4/8-bit affine quant of the
+  // decoder linear weights + tied embeddings (~4x less memory bandwidth -> faster
+  // generation on Apple Silicon). Vision tower stays bf16 (runs once per image).
+  int quantize_bits = 0;
+  int q_group_size = 64;
   // special token ids
   int image_token_id = 151655;
   int vision_start_token_id = 151652;

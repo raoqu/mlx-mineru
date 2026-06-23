@@ -100,6 +100,7 @@ mlx-mineru -p <file.pdf> [options]
 | `--server` | off | Run the HTTP API server instead of converting |
 | `--host <h>` | `127.0.0.1` | Server bind host |
 | `--port <p>` | `8000` | Server port |
+| `--bits <n>` | `4` | LLM weight quantization: `4` / `8` / `0` (full bf16). 4-bit ≈ 10–25% faster generation and ~4× smaller LLM weights, byte-identical greedy output in practice. Use `0` for exact bf16 parity. |
 
 ### Examples
 
@@ -189,6 +190,11 @@ curl -X POST -F "files=@paper.pdf" http://127.0.0.1:8000/file_parse
 ## 6. Notes & limitations
 
 - **Greedy decoding** (`top_k=1`), matching the model's generation config.
+- **Performance:** the LLM decoder is 4-bit quantized by default (memory-bandwidth
+  bound → quantization helps). The vision tower stays bf16 (compute-bound — quantizing
+  it is *slower*). The dominant per-page cost is the layout vision pass + the *per-block*
+  content passes (one model call per block); **batching those blocks is the next major
+  speedup** (what the Python/mlx-vlm path does) and is not yet implemented here.
 - **Simplified vs MinerU Python** (non-blocking): title heading levels are all
   `#`; MagicModel caption/footnote association, the full equation-fix set, image
   reclassification, and cross-page table merge are not yet ported. Core output is

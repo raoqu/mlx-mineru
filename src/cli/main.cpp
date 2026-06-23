@@ -255,7 +255,7 @@ int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
   std::string host = "127.0.0.1";
-  int start_page = 0, end_page = -1, port = 8000;
+  int start_page = 0, end_page = -1, port = 8000, bits = 4;
   bool layout_only = false, server = false;
   app.add_option("-p,--path", pdf_path, "Input PDF path (not needed with --server)");
   app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
@@ -266,12 +266,19 @@ int main(int argc, char** argv) {
   app.add_flag("--server", server, "Run the HTTP API server instead of a one-shot conversion");
   app.add_option("--host", host, "Server bind host (default 127.0.0.1)");
   app.add_option("--port", port, "Server port (default 8000)");
+  app.add_option("--bits", bits, "Weight quantization bits: 4 (default) / 8 / 0 (full bf16)");
   CLI11_PARSE(app, argc, argv);
 
   auto t0 = std::chrono::steady_clock::now();
-  std::cerr << "[mlx-mineru] loading model ...\n";
+  std::cerr << "[mlx-mineru] loading model (quantize " << (bits ? std::to_string(bits) + "-bit" : "off")
+            << ") ...\n";
   mineru::Qwen2Tokenizer tok = mineru::Qwen2Tokenizer::load(model_dir);
-  mineru::Qwen2VLModel model = mineru::Qwen2VLModel::load(model_dir + "/model.safetensors");
+  mineru::Qwen2VLConfig cfg;
+  cfg.quantize_bits = bits;
+  mineru::Qwen2VLModel model = mineru::Qwen2VLModel::load(model_dir + "/model.safetensors", cfg);
+  auto t_loaded = std::chrono::steady_clock::now();
+  std::cerr << "[mlx-mineru] model loaded in "
+            << std::chrono::duration<double>(t_loaded - t0).count() << "s\n";
 
   if (server) return run_server(model, tok, host, port);
 
@@ -329,6 +336,7 @@ int main(int argc, char** argv) {
   }
 
   auto t1 = std::chrono::steady_clock::now();
-  std::cerr << "[mlx-mineru] done in " << std::chrono::duration<double>(t1 - t0).count() << "s\n";
+  std::cerr << "[mlx-mineru] inference in " << std::chrono::duration<double>(t1 - t_loaded).count()
+            << "s; total " << std::chrono::duration<double>(t1 - t0).count() << "s\n";
   return 0;
 }
