@@ -101,6 +101,22 @@ if(HAVE_PDFIUM)
   )
 endif()
 
+# ---- VLM support lib (tokenizer; grows into the Qwen2-VL backend) ------------
+add_library(mineru_vlm STATIC
+  src/vlm/tokenizer.cpp
+)
+target_include_directories(mineru_vlm
+  PUBLIC ${CMAKE_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_SOURCE_DIR}/src/vlm)
+target_link_libraries(mineru_vlm PUBLIC thirdparty_headers)
+
+add_executable(test_tokenizer tests/test_tokenizer.cpp)
+target_include_directories(test_tokenizer PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_tokenizer PRIVATE mineru_vlm)
+add_test(NAME tokenizer
+  COMMAND test_tokenizer ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer
+          ${CMAKE_SOURCE_DIR}/tests/golden/tokenizer.json)
+
 # ---- MLX smoke test ---------------------------------------------------------
 if(HAVE_MLX)
   add_executable(test_mlx_smoke tests/test_mlx_smoke.cpp)

@@ -5,8 +5,9 @@ cd "$(dirname "$0")/.."
 
 BUILD_DIR="${BUILD_DIR:-build}"
 
-# Fetch prebuilt deps if missing (pdfium binary is gitignored).
+# Fetch prebuilt deps if missing (binaries / model files are gitignored).
 ./scripts/fetch_pdfium.sh || echo "WARN: pdfium fetch failed; PDF targets will be skipped"
+./scripts/fetch_tokenizer.sh || echo "WARN: tokenizer fetch failed; tokenizer test will fail"
 
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="${BUILD_TYPE:-Release}"
 cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"

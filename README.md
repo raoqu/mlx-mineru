@@ -30,3 +30,8 @@ committed before the next begins.
   port of MinerU's `page_to_image` (scale=dpi/72 capped to 3500px long side, ceil sizing).
   Verified against `pypdfium2` golden — exact dimensions/scale per page (`scripts/gen_pdf_golden.py`;
   `ctest`: `pdf_raster`). pdfium binary fetched via `scripts/fetch_pdfium.sh`.
+- **Phase 4a — MLX/Metal toolchain** ✅ MLX C++ linked from the pip package; GPU
+  compute smoke test (`ctest`: `mlx_smoke`).
+- **Phase 4b — Qwen2 tokenizer** ✅ byte-level BPE with the exact Qwen2 pre-tokenizer
+  (Unicode tables generated from `unicodedata`). Exact encode/decode parity with HF
+  `transformers` (`scripts/gen_tokenizer_golden.py`; `ctest`: `tokenizer`).

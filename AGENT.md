@@ -74,7 +74,11 @@
 - **Phase 3 ✅**：PDF 栅格化（`include/mineru/pdf.hpp` + `src/io/pdf.cpp`），pdfium C API，忠实移植 `page_to_image`（scale=dpi/72，长边封顶 3500px，`ceil` 取整，RGB8）。验证：`scripts/gen_pdf_golden.py` 用真实 pypdfium2 生成 golden（`tests/golden/pdf_raster.json`），C++ 比对**逐页尺寸/scale/页面点数精确相等** + ink/亮度内容指标在跨构建容差内（pdfium 7906 vs pypdfium2 7891）。ctest `pdf_raster` 通过。
 - 三方库（二进制，gitignore，用脚本取）：`scripts/fetch_pdfium.sh`（pdfium mac-arm64）。
 - ⚠️ **已知近似**：(1) `detect_lang` 用 CJK 脚本启发式替代 fast-langdetect；(2) PDF 像素非逐字节对齐（pdfium 构建版本差异的抗锯齿），但尺寸契约精确对齐。
-- 🎯 **当前主线（用户优先级）：PDF → Markdown**。链路 = 栅格化(P3 ✅) → VLM 后端(P4，Qwen2-VL/MLX) → middle_json → union_make(P1 ✅)。下一步 **Phase 4 VLM/MLX**：参考 `third_party/reference/mlx-vlm/.../qwen2_vl` 与 `mineru-vl-utils`。需要：图像预处理、Qwen2-VL(MLX C++)、Qwen2 BPE tokenizer、两步抽取、输出语法解析、post_process、vlm_magic_model。见 PLAN.md §3 Phase 4。
+- **Phase 4a ✅**：MLX C++ 工具链（CMake 从 pip `mlx` 包定位 headers/libmlx/metallib，target `mlx`）+ Metal GPU smoke（ctest `mlx_smoke`）。
+- **Phase 4b ✅**：Qwen2 字节级 BPE tokenizer（`include/mineru/tokenizer.hpp` + `src/vlm/tokenizer.cpp`），手写 Qwen2 预分词正则（Unicode L/N/空白表由 `scripts/gen_unicode_tables.py` 生成）。验证：`scripts/gen_tokenizer_golden.py` 用真实 transformers 生成 golden，C++ encode **逐 id 精确相等** + decode（含/不含 special）文本相等，ctest `tokenizer`（12 用例：缩写/CJK/逐位数字/多空格/换行/chat 标记）。
+- 模型文件（gitignore）：`scripts/fetch_tokenizer.sh` 取 tokenizer/config（~16MB）；Qwen2-VL 配置见 `models/MinerU2.5-tokenizer/config.json`（LLM hidden 896 / 24 层 / GQA 14:2 / vocab 151936 / tie embeddings；vision depth 32 / 1280d / patch14 / merge2；贪心解码 top_k=1）。
+- 🎯 **PDF → Markdown 主线**：栅格化(P3 ✅) → [图像预处理 4c → Qwen2-VL/MLX 4d → 两步抽取/输出解析/magic_model 4e] → middle_json → union_make(P1 ✅)。
+- **下一步 Phase 4c 图像预处理**（Qwen2VLImageProcessor：smart_resize 到 28 的倍数、CLIP 均值方差归一化、patch 化），可对照 transformers 数值验证，无需权重。再 4d 模型（需下载 ~权重）。
 
 ## 参考样本
 `~/research/MinerU/demo/`：`pdfs/{demo1,demo2,demo3,small_ocr}.pdf`、`office_docs/{docx_01.docx,pptx_01.pptx,xlsx_01.xlsx}`——用作 golden 对比输入。
