@@ -1,0 +1,103 @@
+{
+  "samples": [
+    {
+      "output": "<|box_start|>100 120 900 180<|box_end|><|ref_start|>Title<|ref_end|><|rotate_up|>",
+      "blocks": [
+        {
+          "type": "title",
+          "bbox": [
+            0.1,
+            0.12,
+            0.9,
+            0.18
+          ],
+          "angle": 0,
+          "merge_prev": false
+        }
+      ]
+    },
+    {
+      "output": "<|box_start|>50 200 950 400<|box_end|><|ref_start|>text<|ref_end|><|rotate_up|>txt_contd_tgt<|box_start|>60 420 940 800<|box_end|><|ref_start|>table<|ref_end|><|rotate_up|><|box_start|>70 430 500 600<|box_end|><|ref_start|>text<|ref_end|><|rotate_up|>",
+      "blocks": [
+        {
+          "type": "text",
+          "bbox": [
+            0.05,
+            0.2,
+            0.95,
+            0.4
+          ],
+          "angle": 0,
+          "merge_prev": true
+        },
+        {
+          "type": "table",
+          "bbox": [
+            0.06,
+            0.42,
+            0.94,
+            0.8
+          ],
+          "angle": 0,
+          "merge_prev": false
+        }
+      ]
+    },
+    {
+      "output": "<|box_start|>10 10 5 5<|box_end|><|ref_start|>text<|ref_end|>",
+      "blocks": [
+        {
+          "type": "text",
+          "bbox": [
+            0.005,
+            0.005,
+            0.01,
+            0.01
+          ],
+          "angle": null,
+          "merge_prev": false
+        }
+      ]
+    },
+    {
+      "output": "<|box_start|>0 0 1200 50<|box_end|><|ref_start|>text<|ref_end|>",
+      "blocks": []
+    },
+    {
+      "output": "<|box_start|>30 40 300 90<|box_end|><|ref_start|>unknown<|ref_end|><|rotate_right|>",
+      "blocks": [
+        {
+          "type": "image",
+          "bbox": [
+            0.03,
+            0.04,
+            0.3,
+            0.09
+          ],
+          "angle": 90,
+          "merge_prev": false
+        }
+      ]
+    },
+    {
+      "output": "<|box_start|>30 40 300 90<|box_end|><|ref_start|>inline_formula<|ref_end|>",
+      "blocks": []
+    },
+    {
+      "output": "<|box_start|>10 20 800 60<|box_end|><|ref_start|>image_caption<|ref_end|><|rotate_down|>caption text here",
+      "blocks": [
+        {
+          "type": "image_caption",
+          "bbox": [
+            0.01,
+            0.02,
+            0.8,
+            0.06
+          ],
+          "angle": 180,
+          "merge_prev": false
+        }
+      ]
+    }
+  ]
+}

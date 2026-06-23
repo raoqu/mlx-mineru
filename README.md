@@ -42,3 +42,9 @@ committed before the next begins.
   transformers model: exact next-token argmax, top-10 logits within tolerance, greedy
   continuation matching (near-tie aware) — `scripts/gen_llm_golden.py`; `ctest`:
   `llm_forward`. Weights via `scripts/fetch_weights.sh` (~2.2GB, gitignored).
+- **Phase 4d (vision + multimodal)** ✅ Qwen2-VL vision tower + 3D-MRoPE multimodal
+  merge + greedy generation in MLX C++. Verified vs transformers: vision embeds
+  (`ctest`: `vision`) and full end-to-end image→text generation (`ctest`: `vlm`).
+- **Phase 4e (layout parser)** ✅ parser for the model's layout-detection output
+  (`<|box_start|>…<|ref_*|>…` grammar, bbox conversion, table-internal filter),
+  matching mineru-vl-utils (`ctest`: `layout`).

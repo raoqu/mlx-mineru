@@ -81,8 +81,11 @@
 - **Phase 4c ✅**：图像预处理（`include/mineru/image_preprocess.hpp`+`src/vlm/image_preprocess.cpp`）忠实移植 Qwen2VLImageProcessor（smart_resize 银行家舍入+min/max 像素夹取、PIL 8bit bicubic 两遍定点、CLIP 归一化、patchify reshape/transpose）。验证 ctest `preprocess`：smart_resize 精确、grid_thw 精确、pixel_values **逐采样 bit-exact**（max diff 0.0 vs transformers）。
 - **Phase 4d-LLM ✅**：Qwen2-VL 语言模型 MLX C++（`include/mineru/qwen2_vl.hpp`+`src/vlm/qwen2_llm.cpp`），完整 decoder：GQA(14:2)、MRoPE(chunked [8,12,12]→rotate_half 按频率轴选择)、`fast::rms_norm`/`fast::scaled_dot_product_attention`、SwiGLU、tie embeddings；从真实 safetensors 加载（`mx::load_safetensors`）。验证 ctest `llm_forward`：vs transformers **首 token argmax 精确**、top10 logits 容差内、5 步贪心（近似平局 gap<0.25 容忍）。
 - 权重（gitignore，2.2GB）：`scripts/fetch_weights.sh`。MLX target 由 CMake 从 pip `mlx` 定位。
-- 🎯 **PDF→Markdown 进度**：栅格化(P3 ✅)→图像预处理(4c ✅)→[Qwen2-VL: LLM ✅ / **视觉塔 4d-vision 待做** / 多模态合并]→两步抽取/输出解析/magic_model(4e 待做)→union_make(P1 ✅)。
-- **下一步 Phase 4d-vision**：视觉塔（patch_embed conv3d、32 层 ViT 块带 2D-rope+window attention、patch merger）→ 图像特征注入 LLM 的 image_pad 位置（get_rope_index 3D 位置）。参考 `third_party/reference/mlx-vlm/.../qwen2_vl/vision.py`。
+- **Phase 4d-vision ✅**：视觉塔（patch_embed 以 matmul 实现、32 层 ViT 块带 2D-rope+full attention、quick_gelu MLP、PatchMerger）→ ctest `vision`（vs transformers，mean/std 0.1% 内、MAE/std 1.5%、248/256 采样达标）。
+- **Phase 4d-multimodal ✅**：`get_rope_index`（单图 3D 位置）+ 视觉特征拼接进 image_token 流 + 贪心生成 → ctest `vlm`：完整 预处理→视觉→合并→LLM 端到端复现 transformers 12 步贪心生成。
+- **Phase 4e-layout ✅**：版面输出解析器（`include/mineru/vlm_layout.hpp`+`src/vlm/vlm_layout.cpp`），`<|box_start|>…<|ref_*|>…` 文法 + bbox 0..1000→[0,1] + 表内块过滤，对齐 mineru-vl-utils → ctest `layout`。
+- 🎯 **PDF→Markdown 进度**：栅格化(P3 ✅)→图像预处理(4c ✅)→Qwen2-VL 全模型 MLX C++(LLM✅/视觉✅/多模态✅，均已验证)→版面解析(4e-layout ✅)→[**剩余**：两步抽取编排+KV cache、每块内容抽取、post_process、MagicModel→middle_json、CLI]→union_make(P1 ✅)。
+- **下一步**：(1) KV cache（真实页 ~1369 图像 token，逐步重算太慢）；(2) 两步抽取编排（chat 模板 + layout_image_size=1036² + 每块裁剪/按类型 prompt）；(3) MagicModel(`vlm_magic_model.py` 856 行)→ middle_json；(4) `mlx-mineru` CLI 串起全链路。这些为字符串/编排逻辑（似 P1），但量大，且字节级对齐需可跑 MinerU Python VLM。
 
 ## 参考样本
 `~/research/MinerU/demo/`：`pdfs/{demo1,demo2,demo3,small_ocr}.pdf`、`office_docs/{docx_01.docx,pptx_01.pptx,xlsx_01.xlsx}`——用作 golden 对比输入。

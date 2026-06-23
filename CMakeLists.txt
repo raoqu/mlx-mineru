@@ -105,6 +105,7 @@ endif()
 add_library(mineru_vlm STATIC
   src/vlm/tokenizer.cpp
   src/vlm/image_preprocess.cpp
+  src/vlm/vlm_layout.cpp
 )
 target_include_directories(mineru_vlm
   PUBLIC ${CMAKE_SOURCE_DIR}/include
@@ -122,6 +123,11 @@ add_executable(test_preprocess tests/test_preprocess.cpp)
 target_include_directories(test_preprocess PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(test_preprocess PRIVATE mineru_vlm)
 add_test(NAME preprocess COMMAND test_preprocess ${CMAKE_SOURCE_DIR}/tests/golden)
+
+add_executable(test_layout tests/test_layout.cpp)
+target_include_directories(test_layout PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_layout PRIVATE mineru_vlm)
+add_test(NAME layout COMMAND test_layout ${CMAKE_SOURCE_DIR}/tests/golden/layout.json)
 
 # ---- MLX smoke test ---------------------------------------------------------
 if(HAVE_MLX)
