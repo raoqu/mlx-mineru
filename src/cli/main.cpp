@@ -98,79 +98,46 @@ static json text_lines(const std::string& content, const std::array<double, 4>& 
                        {"spans", json::array({{{"type", ct::kText}, {"content", content}}})}}});
 }
 
-int main(int argc, char** argv) {
-  CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
-  std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_path;
-  int page = 0, layout_max = 1200, content_max = 2048;
-  bool layout_only = false;
-  app.add_option("-p,--path", pdf_path, "Input PDF path")->required();
-  app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
-  app.add_option("--page", page, "0-based page index");
-  app.add_option("-o,--output", out_path, "Output file (.md, or .json with --layout-only)");
-  app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON");
-  CLI11_PARSE(app, argc, argv);
-
-  auto t0 = std::chrono::steady_clock::now();
-  std::cerr << "[mlx-mineru] loading model ...\n";
-  mineru::Qwen2Tokenizer tok = mineru::Qwen2Tokenizer::load(model_dir);
-  mineru::Qwen2VLModel model = mineru::Qwen2VLModel::load(model_dir + "/model.safetensors");
+// Process one page: layout detection -> per-block content -> page_info json.
+static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
+                         const mineru::PageImage& pg, int page_idx, bool layout_only,
+                         std::vector<mineru::ContentBlock>* layout_out = nullptr) {
   const auto& cfg = model.config();
-
-  mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);
-  if (page < 0 || page >= doc.page_count()) { std::cerr << "page out of range\n"; return 2; }
-  mineru::PageImage pg = doc.render_page(page);
-
-  // Step 1: layout detection on the 1036x1036 page.
   std::vector<uint8_t> resized = mineru::resize_bicubic_rgb8(pg.rgb, pg.width, pg.height, 1036, 1036);
   mineru::VisionInput vi = mineru::preprocess_image(resized, 1036, 1036);
   int n_img = vi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
-  std::cerr << "[mlx-mineru] layout detection (" << n_img << " image tokens) ...\n";
   std::vector<float> lembeds = model.forward_vision(vi.pixel_values, vi.grid_thw);
   std::vector<int> lprompt = build_prompt(tok, n_img, cfg.image_token_id, "\nLayout Detection:");
-  std::vector<int> lgen = model.generate_multimodal(lprompt, lembeds, n_img, vi.grid_thw, layout_max, kEos);
+  std::vector<int> lgen = model.generate_multimodal(lprompt, lembeds, n_img, vi.grid_thw, 1200, kEos);
   std::vector<mineru::ContentBlock> blocks = mineru::parse_layout_output(tok.decode(lgen, false));
-  std::cerr << "[mlx-mineru] " << blocks.size() << " blocks detected\n";
+  std::cerr << "[mlx-mineru] page " << page_idx << ": " << blocks.size() << " blocks\n";
+  if (layout_out) *layout_out = blocks;
+  if (layout_only) return json::object();
 
-  if (layout_only) {
-    json out = {{"page_idx", page}, {"num_blocks", blocks.size()}, {"blocks", json::array()}};
-    for (auto& b : blocks) {
-      json jb = {{"type", b.type}, {"bbox", {b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]}}};
-      if (b.angle) jb["angle"] = *b.angle;
-      out["blocks"].push_back(jb);
-    }
-    std::string s = out.dump(2);
-    if (out_path.empty()) std::cout << s << "\n"; else std::ofstream(out_path) << s;
-    return 0;
-  }
-
-  // Step 2: per-block content extraction + middle_json assembly.
   json para_blocks = json::array(), discarded = json::array();
   std::array<double, 2> page_size = {pg.width_pt, pg.height_pt};
   auto scaled = [&](const std::array<double, 4>& b) {
-    return std::array<double, 4>{b[0] * page_size[0], b[1] * page_size[1],
-                                 b[2] * page_size[0], b[3] * page_size[1]};
+    return std::array<double, 4>{b[0] * page_size[0], b[1] * page_size[1], b[2] * page_size[0],
+                                 b[3] * page_size[1]};
   };
   static const std::vector<std::string> discard_types = {
       bt::kHeader, bt::kFooter, bt::kPageNumber, bt::kPageFootnote, bt::kAsideText};
-
   int index = 0;
   for (size_t i = 0; i < blocks.size(); ++i) {
     const auto& b = blocks[i];
-    std::cerr << "[mlx-mineru] block " << (i + 1) << "/" << blocks.size() << " (" << b.type << ") ...\r";
+    std::cerr << "[mlx-mineru]  block " << (i + 1) << "/" << blocks.size() << " (" << b.type << ")   \r";
     int cw, ch;
     std::vector<uint8_t> crop = crop_rgb(pg, b.bbox, cw, ch);
     auto bb = scaled(b.bbox);
-
     if (std::find(discard_types.begin(), discard_types.end(), b.type) != discard_types.end()) {
       std::string content = extract_content(model, tok, crop, cw, ch, "\nText Recognition:", 512);
       discarded.push_back({{"type", bt::kDiscarded}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                            {"lines", text_lines(content, bb)}});
       continue;
     }
-    std::string instr = instruction_for(b.type);
-    std::string content = extract_content(model, tok, crop, cw, ch, instr,
-                                          (b.type == "table") ? content_max : 1024);
-
+    std::string content =
+        extract_content(model, tok, crop, cw, ch, instruction_for(b.type),
+                        (b.type == "table") ? 2048 : 1024);
     json pb;
     if (b.type == "title") {
       pb = {{"type", bt::kTitle}, {"level", 1}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
@@ -185,28 +152,73 @@ int main(int argc, char** argv) {
             {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                 {"spans", json::array({{{"type", ct::kInterlineEquation}, {"content", content}}})}}})}};
     } else {
-      // text-like (text/ref_text/phonetic/index/list/code/image-analysis-as-text)
-      std::string btype = (b.type == "code" || b.type == "algorithm") ? bt::kText : bt::kText;
-      pb = {{"type", btype}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
+      pb = {{"type", bt::kText}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
             {"lines", text_lines(content, bb)}};
     }
     para_blocks.push_back(pb);
     ++index;
   }
   std::cerr << "\n";
+  return {{"page_idx", page_idx}, {"page_size", {page_size[0], page_size[1]}},
+          {"para_blocks", para_blocks}, {"discarded_blocks", discarded}};
+}
 
-  json middle = {{"pdf_info", json::array({{{"page_idx", page}, {"page_size", {page_size[0], page_size[1]}},
-                  {"para_blocks", para_blocks}, {"discarded_blocks", discarded}}})},
-                 {"_backend", "vlm"}, {"_version_name", mineru::kMineruVersion}};
+int main(int argc, char** argv) {
+  CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
+  std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_path;
+  int start_page = 0, end_page = -1;
+  bool layout_only = false;
+  app.add_option("-p,--path", pdf_path, "Input PDF path")->required();
+  app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
+  app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
+  app.add_option("-e,--end", end_page, "Last 0-based page inclusive (default: last)");
+  app.add_option("-o,--output", out_path, "Output file (.md, or .json with --layout-only)");
+  app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON");
+  CLI11_PARSE(app, argc, argv);
 
-  std::string md = mineru::union_make(middle["pdf_info"], mineru::make_mode::kMmMd, "images").get<std::string>();
+  auto t0 = std::chrono::steady_clock::now();
+  std::cerr << "[mlx-mineru] loading model ...\n";
+  mineru::Qwen2Tokenizer tok = mineru::Qwen2Tokenizer::load(model_dir);
+  mineru::Qwen2VLModel model = mineru::Qwen2VLModel::load(model_dir + "/model.safetensors");
+
+  mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);
+  int npages = doc.page_count();
+  int s = std::clamp(start_page, 0, npages - 1);
+  int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
+  std::cerr << "[mlx-mineru] " << pdf_path << ": pages " << s << ".." << e << " of " << npages << "\n";
+
+  json pdf_info = json::array();
+  json layout_json = json::array();
+  for (int p = s; p <= e; ++p) {
+    mineru::PageImage pg = doc.render_page(p);
+    std::vector<mineru::ContentBlock> blocks;
+    json page_info = process_page(model, tok, pg, p, layout_only, &blocks);
+    if (layout_only) {
+      json jb = json::array();
+      for (auto& b : blocks) {
+        json o = {{"type", b.type}, {"bbox", {b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]}}};
+        if (b.angle) o["angle"] = *b.angle;
+        jb.push_back(o);
+      }
+      layout_json.push_back({{"page_idx", p}, {"blocks", jb}});
+    } else {
+      pdf_info.push_back(page_info);
+    }
+  }
+
+  std::string result;
+  if (layout_only) {
+    result = layout_json.dump(2);
+  } else {
+    result = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+  }
 
   auto t1 = std::chrono::steady_clock::now();
   std::cerr << "[mlx-mineru] done in " << std::chrono::duration<double>(t1 - t0).count() << "s\n";
   if (out_path.empty()) {
-    std::cout << md << "\n";
+    std::cout << result << "\n";
   } else {
-    std::ofstream(out_path) << md;
+    std::ofstream(out_path) << result;
     std::cerr << "[mlx-mineru] wrote " << out_path << "\n";
   }
   return 0;
