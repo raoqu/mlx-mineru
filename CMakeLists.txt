@@ -130,4 +130,21 @@ if(HAVE_MLX)
   target_link_libraries(test_mlx_smoke PRIVATE mlx thirdparty_headers)
   set_target_properties(test_mlx_smoke PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
   add_test(NAME mlx_smoke COMMAND test_mlx_smoke)
+
+  # ---- Qwen2-VL model (MLX) -------------------------------------------------
+  add_library(mineru_qwen STATIC src/vlm/qwen2_llm.cpp)
+  target_include_directories(mineru_qwen PUBLIC ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(mineru_qwen PUBLIC mlx thirdparty_headers)
+
+  set(MODEL_ST ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer/model.safetensors)
+  if(EXISTS ${MODEL_ST})
+    add_executable(test_llm_forward tests/test_llm_forward.cpp)
+    target_include_directories(test_llm_forward PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_llm_forward PRIVATE mineru_qwen)
+    set_target_properties(test_llm_forward PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
+    add_test(NAME llm_forward
+      COMMAND test_llm_forward ${MODEL_ST} ${CMAKE_SOURCE_DIR}/tests/golden/llm.json)
+  else()
+    message(STATUS "model weights not present; llm_forward test disabled (run scripts/fetch_weights.sh)")
+  endif()
 endif()

@@ -35,3 +35,10 @@ committed before the next begins.
 - **Phase 4b — Qwen2 tokenizer** ✅ byte-level BPE with the exact Qwen2 pre-tokenizer
   (Unicode tables generated from `unicodedata`). Exact encode/decode parity with HF
   `transformers` (`scripts/gen_tokenizer_golden.py`; `ctest`: `tokenizer`).
+- **Phase 4c — image preprocessing** ✅ Qwen2VLImageProcessor port (smart_resize +
+  PIL bicubic + normalize + patchify). Bit-exact vs transformers (`ctest`: `preprocess`).
+- **Phase 4d (LLM) — Qwen2-VL language model in MLX C++** ✅ full decoder (GQA, MRoPE,
+  RMSNorm, SwiGLU, tied embeddings) loading the real safetensors. Verified vs the
+  transformers model: exact next-token argmax, top-10 logits within tolerance, greedy
+  continuation matching (near-tie aware) — `scripts/gen_llm_golden.py`; `ctest`:
+  `llm_forward`. Weights via `scripts/fetch_weights.sh` (~2.2GB, gitignored).

@@ -78,7 +78,11 @@
 - **Phase 4b ✅**：Qwen2 字节级 BPE tokenizer（`include/mineru/tokenizer.hpp` + `src/vlm/tokenizer.cpp`），手写 Qwen2 预分词正则（Unicode L/N/空白表由 `scripts/gen_unicode_tables.py` 生成）。验证：`scripts/gen_tokenizer_golden.py` 用真实 transformers 生成 golden，C++ encode **逐 id 精确相等** + decode（含/不含 special）文本相等，ctest `tokenizer`（12 用例：缩写/CJK/逐位数字/多空格/换行/chat 标记）。
 - 模型文件（gitignore）：`scripts/fetch_tokenizer.sh` 取 tokenizer/config（~16MB）；Qwen2-VL 配置见 `models/MinerU2.5-tokenizer/config.json`（LLM hidden 896 / 24 层 / GQA 14:2 / vocab 151936 / tie embeddings；vision depth 32 / 1280d / patch14 / merge2；贪心解码 top_k=1）。
 - 🎯 **PDF → Markdown 主线**：栅格化(P3 ✅) → [图像预处理 4c → Qwen2-VL/MLX 4d → 两步抽取/输出解析/magic_model 4e] → middle_json → union_make(P1 ✅)。
-- **下一步 Phase 4c 图像预处理**（Qwen2VLImageProcessor：smart_resize 到 28 的倍数、CLIP 均值方差归一化、patch 化），可对照 transformers 数值验证，无需权重。再 4d 模型（需下载 ~权重）。
+- **Phase 4c ✅**：图像预处理（`include/mineru/image_preprocess.hpp`+`src/vlm/image_preprocess.cpp`）忠实移植 Qwen2VLImageProcessor（smart_resize 银行家舍入+min/max 像素夹取、PIL 8bit bicubic 两遍定点、CLIP 归一化、patchify reshape/transpose）。验证 ctest `preprocess`：smart_resize 精确、grid_thw 精确、pixel_values **逐采样 bit-exact**（max diff 0.0 vs transformers）。
+- **Phase 4d-LLM ✅**：Qwen2-VL 语言模型 MLX C++（`include/mineru/qwen2_vl.hpp`+`src/vlm/qwen2_llm.cpp`），完整 decoder：GQA(14:2)、MRoPE(chunked [8,12,12]→rotate_half 按频率轴选择)、`fast::rms_norm`/`fast::scaled_dot_product_attention`、SwiGLU、tie embeddings；从真实 safetensors 加载（`mx::load_safetensors`）。验证 ctest `llm_forward`：vs transformers **首 token argmax 精确**、top10 logits 容差内、5 步贪心（近似平局 gap<0.25 容忍）。
+- 权重（gitignore，2.2GB）：`scripts/fetch_weights.sh`。MLX target 由 CMake 从 pip `mlx` 定位。
+- 🎯 **PDF→Markdown 进度**：栅格化(P3 ✅)→图像预处理(4c ✅)→[Qwen2-VL: LLM ✅ / **视觉塔 4d-vision 待做** / 多模态合并]→两步抽取/输出解析/magic_model(4e 待做)→union_make(P1 ✅)。
+- **下一步 Phase 4d-vision**：视觉塔（patch_embed conv3d、32 层 ViT 块带 2D-rope+window attention、patch merger）→ 图像特征注入 LLM 的 image_pad 位置（get_rope_index 3D 位置）。参考 `third_party/reference/mlx-vlm/.../qwen2_vl/vision.py`。
 
 ## 参考样本
 `~/research/MinerU/demo/`：`pdfs/{demo1,demo2,demo3,small_ocr}.pdf`、`office_docs/{docx_01.docx,pptx_01.pptx,xlsx_01.xlsx}`——用作 golden 对比输入。
