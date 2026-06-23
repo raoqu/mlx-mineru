@@ -5,8 +5,9 @@ document parsing (PDF / image / Office → Markdown / JSON), **with no Python ru
 MLX/Metal-accelerated on Apple Silicon.
 
 See [USAGE.md](USAGE.md) for full run commands, the HTTP API, and model/dependency
-files. See [GOAL.md](GOAL.md), [PLAN.md](PLAN.md), and [AGENT.md](AGENT.md) for scope,
-plan, and working principles.
+files, and [DIFF.md](DIFF.md) for the functional differences vs. upstream MinerU. See
+[GOAL.md](GOAL.md), [PLAN.md](PLAN.md), and [AGENT.md](AGENT.md) for scope, plan, and
+working principles.
 
 ## Build & test
 
