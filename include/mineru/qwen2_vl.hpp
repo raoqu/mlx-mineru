@@ -70,6 +70,13 @@ class Qwen2VLModel {
   std::vector<float> forward_vision(const std::vector<float>& pixel_values,
                                     const std::array<int, 3>& grid) const;
 
+  // Encode several crops at once: builds all vision graphs and evaluates them in
+  // a single synchronized batch (MLX overlaps the independent forwards on the
+  // GPU), instead of one blocking forward+sync per crop. Returns per-crop embeds.
+  std::vector<std::vector<float>> forward_vision_batch(
+      const std::vector<std::vector<float>>& pixel_values_list,
+      const std::vector<std::array<int, 3>>& grids) const;
+
   // Multimodal last-token logits (float32, vocab): `input_ids` contains a
   // contiguous run of image_token_id placeholders replaced by `image_embeds`
   // ([n_img, hidden_size]); `grid` is the image (t,gh,gw).

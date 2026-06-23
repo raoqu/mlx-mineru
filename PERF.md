@@ -30,6 +30,32 @@ assembly, overhead) — use it to target work.
   weight traffic per token. Vision left bf16 (compute-bound; quantizing it measured
   *slower*).
 - **Length-bucketed batched generation** (`--batch`) — content gen 259→~413 tok/s.
+- **Single-sync content vision** (`forward_vision_batch`) — all crops built lazily and
+  eval'd in one batch (one GPU sync vs one per crop). Output verified identical.
+
+## Findings — content-vision batching (Tier 1, attempted)
+
+Both Tier-1 vision approaches were implemented and measured on `a.pdf`; **neither sped
+up content vision** (~3.6s for 26 crops):
+
+| Approach | content vision | verdict |
+|---|---:|---|
+| per-crop (baseline) | 3.60s | — |
+| lazy + single eval (`forward_vision_batch`) | 3.57s | **neutral** (MLX runs the forwards serially on the GPU; it's compute-bound, not sync-bound) |
+| packed: concat patches + block-diagonal **dense** mask | 3.96s | **slower** (O(T²) attention waste > linear-layer batching gain); reverted |
+
+Conclusion: content vision is compute-bound serial GPU work. The C++ MLX API has **no
+varlen / `cu_seqlens` block-diagonal flash attention**, so packing must pay full O(T²)
+attention. A real speedup needs that kernel (Tier 3 #7) — otherwise per-crop is optimal.
+
+The kept structure (lazy `forward_vision_batch`) is neutral but cleaner (one sync) and
+is the natural seam for a future varlen kernel.
+
+### Most promising untried lever
+**Cross-page layout batching.** The *layout* image is a fixed 1036×1036 (1369 patches)
+for every page → **uniform size, zero padding waste** (unlike content crops). Batching
+all pages' layout vision+generation in one pass would speed the layout phase (≈44% of
+wall on a.pdf) on multi-page docs — the clean batching win the content path can't offer.
 
 ## Plan — ranked by ROI
 

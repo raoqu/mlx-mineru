@@ -227,8 +227,10 @@ struct Qwen2VLModel::Impl {
     return mx::add(mx::multiply(x, cos), mx::multiply(rotate_half(x), sin));
   }
 
-  std::vector<float> forward_vision(const std::vector<float>& pixel_values,
-                                    const std::array<int, 3>& grid) const {
+  // Lazy vision tower: returns the (merged, H) float32 embeds WITHOUT eval, so
+  // many crops can be built and evaluated together (GPU overlap, single sync).
+  array forward_vision_array(const std::vector<float>& pixel_values,
+                             const std::array<int, 3>& grid) const {
     int gt = grid[0], gh = grid[1], gw = grid[2];
     int seq = gt * gh * gw;
     int ed = cfg.v_embed_dim, nH = cfg.v_num_heads, hd = cfg.v_head_dim();  // 1280,16,80
@@ -305,10 +307,41 @@ struct Qwen2VLModel::Impl {
     array gelu = mx::multiply(mx::multiply(m, array(0.5f)),
                               mx::add(array(1.0f), mx::erf(mx::divide(m, array(std::sqrt(2.0f))))));
     m = linear_w(gelu, "visual.merger.mlp.2.weight", "visual.merger.mlp.2.bias");
-    m = mx::astype(m, mx::float32);
+    return mx::astype(m, mx::float32);  // (merged, H), lazy
+  }
+
+  std::vector<float> forward_vision(const std::vector<float>& pixel_values,
+                                    const std::array<int, 3>& grid) const {
+    array m = forward_vision_array(pixel_values, grid);
     mx::eval(m);
     const float* dp = m.data<float>();
+    int merged = (grid[0] * grid[1] * grid[2]) /
+                 (cfg.spatial_merge_size * cfg.spatial_merge_size);
     return std::vector<float>(dp, dp + static_cast<size_t>(merged) * cfg.hidden_size);
+  }
+
+  // Encode many crops: build all vision graphs lazily and evaluate them in ONE
+  // synchronized batch (single GPU sync instead of one per crop), then copy.
+  // NOTE: this is perf-neutral vs per-crop on current MLX (forwards run serially
+  // on the GPU; content vision is compute-bound). True speedup would need a
+  // varlen/cu_seqlens block-diagonal flash-attention kernel — packing with a
+  // dense mask was measured *slower* (O(T^2) attention waste).
+  std::vector<std::vector<float>> forward_vision_batch(
+      const std::vector<std::vector<float>>& pv_list,
+      const std::vector<std::array<int, 3>>& grids) const {
+    int n = (int)pv_list.size();
+    std::vector<array> ms;
+    ms.reserve(n);
+    for (int i = 0; i < n; ++i) ms.push_back(forward_vision_array(pv_list[i], grids[i]));
+    if (!ms.empty()) mx::eval(ms);  // single synchronized batch
+    std::vector<std::vector<float>> out(n);
+    for (int i = 0; i < n; ++i) {
+      int merged = (grids[i][0] * grids[i][1] * grids[i][2]) /
+                   (cfg.spatial_merge_size * cfg.spatial_merge_size);
+      const float* dp = ms[i].data<float>();
+      out[i].assign(dp, dp + (size_t)merged * cfg.hidden_size);
+    }
+    return out;
   }
 
   std::vector<float> last_logits(const std::vector<int>& tokens, const PositionIds& pos) const {
@@ -619,6 +652,12 @@ int Qwen2VLModel::argmax_next(const std::vector<int>& tokens) const {
 std::vector<float> Qwen2VLModel::forward_vision(const std::vector<float>& pixel_values,
                                                 const std::array<int, 3>& grid) const {
   return impl_->forward_vision(pixel_values, grid);
+}
+
+std::vector<std::vector<float>> Qwen2VLModel::forward_vision_batch(
+    const std::vector<std::vector<float>>& pv_list,
+    const std::vector<std::array<int, 3>>& grids) const {
+  return impl_->forward_vision_batch(pv_list, grids);
 }
 
 std::vector<float> Qwen2VLModel::multimodal_last_logits(const std::vector<int>& input_ids,

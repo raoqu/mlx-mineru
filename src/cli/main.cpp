@@ -138,12 +138,12 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
   struct Job { int cw, ch; bool keep_special; std::vector<uint8_t> crop; };
   std::vector<Job> jobs(blocks.size());
   std::vector<std::vector<int>> prompts(blocks.size());
-  std::vector<std::vector<float>> embeds(blocks.size());
+  std::vector<std::vector<float>> pvs(blocks.size());  // per-block pixel_values (CPU)
   std::vector<int> nimgs(blocks.size());
   std::vector<std::array<int, 3>> grids(blocks.size());
   for (size_t i = 0; i < blocks.size(); ++i) {
     const auto& b = blocks[i];
-    std::cerr << "[mlx-mineru]  vision " << (i + 1) << "/" << blocks.size() << " (" << b.type << ")   \r";
+    std::cerr << "[mlx-mineru]  preprocess " << (i + 1) << "/" << blocks.size() << " (" << b.type << ")   \r";
     bool discard = std::find(discard_types.begin(), discard_types.end(), b.type) != discard_types.end();
     Job& j = jobs[i];
     j.crop = crop_rgb(pg, b.bbox, j.cw, j.ch);
@@ -152,12 +152,15 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
     mineru::VisionInput cvi = mineru::preprocess_image(crop, j.cw, j.ch);
     nimgs[i] = cvi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
     grids[i] = cvi.grid_thw;
-    auto _cv0 = Clock::now();
-    embeds[i] = model.forward_vision(cvi.pixel_values, cvi.grid_thw);
-    g_prof.content_vision += secs(_cv0, Clock::now());
+    pvs[i] = std::move(cvi.pixel_values);
     std::string instr = discard ? "\nText Recognition:" : instruction_for(b.type);
     prompts[i] = build_prompt(tok, nimgs[i], cfg.image_token_id, instr);
   }
+  // Encode ALL crops in one synchronized batch (MLX overlaps them on the GPU).
+  std::cerr << "\n[mlx-mineru]  batched vision over " << blocks.size() << " crops ...\n";
+  auto _cv0 = Clock::now();
+  std::vector<std::vector<float>> embeds = model.forward_vision_batch(pvs, grids);
+  g_prof.content_vision += secs(_cv0, Clock::now());
   // Pass 2: batched generation, length-bucketed. Sort blocks by prompt length
   // and batch similar-length ones together so left-padding waste stays small
   // (image-token counts vary a lot across crops).
