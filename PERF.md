@@ -65,6 +65,25 @@ Cross-page layout batching (the clean uniform-size win) was subsequently impleme
 see "Already done" above. It confirmed the model: **generation** batches well (memory-
 bandwidth bound), **vision** does not (compute-bound).
 
+## Findings — generation is critical-path-latency bound
+
+Measured: decode runs at only **15–26% of peak memory bandwidth** (247 MB 4-bit
+weights/token × 239–413 tok/s ≈ 59–102 GB/s of ~400). So it is **not** bandwidth/
+copy-bound — confirming **KV-cache pre-allocation would be ~negligible** (it only saves
+copies). It is **latency-bound**: the per-token time is the critical path through 24
+sequential layers (~10 sequential ops each), where each tiny 1-row matmul is dominated
+by kernel launch/dispatch latency.
+
+Tried **q/k/v + gate/up weight fusion** (7→4 matmuls/layer): **neutral** (419 vs 416
+tok/s, output identical). Reason: q/k/v (and gate/up) are *parallel* ops — fusing them
+doesn't shorten the critical path. Kept anyway (correct, standard, slightly faster
+load: 4 vs 7 quantize calls/layer).
+
+→ The only thing that shortens the decode critical path is fusing *sequential* ops
+(rope into qkv, silu·up, residual adds) into fewer kernels — i.e. **`mx::compile`** with
+a **fixed-capacity (static-shape) KV cache**. That's the real generation lever, and a
+large change.
+
 ## Plan — ranked by ROI
 
 ### Tier 1 — biggest win, moderate effort

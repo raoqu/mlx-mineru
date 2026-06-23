@@ -2,6 +2,7 @@
 // Qwen2-VL language model forward in MLX C++ (faithful to mlx-vlm qwen2_vl).
 #include "mineru/qwen2_vl.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <optional>
@@ -44,14 +45,48 @@ struct Qwen2VLModel::Impl {
 
   bool is_quantized(const std::string& name) const { return qw.find(name) != qw.end(); }
 
+  // Slice the last axis [a,b) of x (any rank).
+  array slice_last(const array& x, int a, int b) const {
+    mx::Shape start = x.shape();
+    mx::Shape stop = x.shape();
+    std::fill(start.begin(), start.end(), 0);
+    start.back() = a;
+    stop.back() = b;
+    return mx::slice(x, start, stop);
+  }
+
+  // Fuse q/k/v and gate/up projection weights per layer into single matmuls.
+  // For a 1-row decode step each matmul is pure launch overhead, so 7 matmuls/
+  // layer -> 4 (qkv, o, gate_up, down) cuts ~40% of the per-token launches.
+  void fuse_weights() {
+    for (int l = 0; l < cfg.num_hidden_layers; ++l) {
+      std::string p = "model.layers." + std::to_string(l) + ".";
+      std::string a = p + "self_attn.", m = p + "mlp.";
+      array qkv_w = mx::concatenate(
+          {get(a + "q_proj.weight"), get(a + "k_proj.weight"), get(a + "v_proj.weight")}, 0);
+      array qkv_b = mx::concatenate(
+          {get(a + "q_proj.bias"), get(a + "k_proj.bias"), get(a + "v_proj.bias")}, 0);
+      array gu_w = mx::concatenate({get(m + "gate_proj.weight"), get(m + "up_proj.weight")}, 0);
+      mx::eval(qkv_w, qkv_b, gu_w);
+      for (const char* s : {"q_proj.weight", "q_proj.bias", "k_proj.weight", "k_proj.bias",
+                            "v_proj.weight", "v_proj.bias"})
+        w.erase(a + s);
+      w.erase(m + "gate_proj.weight");
+      w.erase(m + "up_proj.weight");
+      w.emplace(a + "qkv_proj.weight", std::move(qkv_w));
+      w.emplace(a + "qkv_proj.bias", std::move(qkv_b));
+      w.emplace(m + "gate_up_proj.weight", std::move(gu_w));
+    }
+  }
+
   // Quantize the decoder linear weights + tied embeddings to cfg.quantize_bits.
   void maybe_quantize() {
     if (cfg.quantize_bits <= 0) return;
     std::vector<std::string> names = {"model.embed_tokens.weight"};
     for (int l = 0; l < cfg.num_hidden_layers; ++l) {
       std::string p = "model.layers." + std::to_string(l) + ".";
-      for (const char* s : {"self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj",
-                            "self_attn.o_proj", "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"})
+      for (const char* s : {"self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj",
+                            "mlp.down_proj"})
         names.push_back(p + s + ".weight");
     }
     // NOTE: the vision tower is deliberately NOT quantized — it is compute-bound
@@ -114,6 +149,19 @@ struct Qwen2VLModel::Impl {
     return mx::add(mx::multiply(x, cos), mx::multiply(rotate_half(x), sin));
   }
 
+  // Fused q/k/v and gate/up projections (one matmul each, then split).
+  std::array<array, 3> qkv_proj(const array& hn, const std::string& p) const {
+    array x = linear_w(hn, p + "self_attn.qkv_proj.weight", p + "self_attn.qkv_proj.bias");
+    int qd = cfg.num_attention_heads * cfg.head_dim();
+    int kd = cfg.num_key_value_heads * cfg.head_dim();
+    return {slice_last(x, 0, qd), slice_last(x, qd, qd + kd), slice_last(x, qd + kd, qd + 2 * kd)};
+  }
+  std::pair<array, array> gate_up_proj(const array& h2, const std::string& p) const {
+    array x = linear_w(h2, p + "mlp.gate_up_proj.weight");
+    int i = cfg.intermediate_size;
+    return {slice_last(x, 0, i), slice_last(x, i, 2 * i)};
+  }
+
   // Embed token ids -> (1, L, H).
   array embed_tokens(const std::vector<int>& tokens) const {
     int L = static_cast<int>(tokens.size());
@@ -174,9 +222,7 @@ struct Qwen2VLModel::Impl {
       std::string p = "model.layers." + std::to_string(l) + ".";
       array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
 
-      array q = linear_w(hn, p + "self_attn.q_proj.weight", p + "self_attn.q_proj.bias");
-      array k = linear_w(hn, p + "self_attn.k_proj.weight", p + "self_attn.k_proj.bias");
-      array v = linear_w(hn, p + "self_attn.v_proj.weight", p + "self_attn.v_proj.bias");
+      auto [q, k, v] = qkv_proj(hn, p);
 
       q = mx::transpose(mx::reshape(q, {1, L, nH, hd}), {0, 2, 1, 3});
       k = mx::transpose(mx::reshape(k, {1, L, nKV, hd}), {0, 2, 1, 3});
@@ -191,8 +237,7 @@ struct Qwen2VLModel::Impl {
       h = mx::add(h, o);
 
       array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
-      array gate = linear_w(h2, p + "mlp.gate_proj.weight");
-      array up = linear_w(h2, p + "mlp.up_proj.weight");
+      auto [gate, up] = gate_up_proj(h2, p);
       array silu = mx::multiply(gate, mx::sigmoid(gate));
       array mlp = linear_w(mx::multiply(silu, up), p + "mlp.down_proj.weight");
       h = mx::add(h, mlp);
@@ -450,9 +495,7 @@ struct Qwen2VLModel::Impl {
     for (int l = 0; l < cfg.num_hidden_layers; ++l) {
       std::string p = "model.layers." + std::to_string(l) + ".";
       array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
-      array q = linear_w(hn, p + "self_attn.q_proj.weight", p + "self_attn.q_proj.bias");
-      array k = linear_w(hn, p + "self_attn.k_proj.weight", p + "self_attn.k_proj.bias");
-      array v = linear_w(hn, p + "self_attn.v_proj.weight", p + "self_attn.v_proj.bias");
+      auto [q, k, v] = qkv_proj(hn, p);
       q = apply_rope(mx::transpose(mx::reshape(q, {1, L, nH, hd}), {0, 2, 1, 3}), cosA, sinA);
       k = apply_rope(mx::transpose(mx::reshape(k, {1, L, nKV, hd}), {0, 2, 1, 3}), cosA, sinA);
       v = mx::transpose(mx::reshape(v, {1, L, nKV, hd}), {0, 2, 1, 3});
@@ -467,8 +510,7 @@ struct Qwen2VLModel::Impl {
                  p + "self_attn.o_proj.weight");
       h = mx::add(h, o);
       array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
-      array gate = linear_w(h2, p + "mlp.gate_proj.weight");
-      array up = linear_w(h2, p + "mlp.up_proj.weight");
+      auto [gate, up] = gate_up_proj(h2, p);
       array mlp = linear_w(mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), up), p + "mlp.down_proj.weight");
       h = mx::add(h, mlp);
     }
@@ -555,9 +597,7 @@ struct Qwen2VLModel::Impl {
     for (int l = 0; l < cfg.num_hidden_layers; ++l) {
       std::string p = "model.layers." + std::to_string(l) + ".";
       array hn = mx::fast::rms_norm(h, get(p + "input_layernorm.weight"), cfg.rms_norm_eps);
-      array q = linear_w(hn, p + "self_attn.q_proj.weight", p + "self_attn.q_proj.bias");
-      array k = linear_w(hn, p + "self_attn.k_proj.weight", p + "self_attn.k_proj.bias");
-      array v = linear_w(hn, p + "self_attn.v_proj.weight", p + "self_attn.v_proj.bias");
+      auto [q, k, v] = qkv_proj(hn, p);
       q = apply_rope(mx::transpose(mx::reshape(q, {B, L, nH, hd}), {0, 2, 1, 3}), cos, sin);
       k = apply_rope(mx::transpose(mx::reshape(k, {B, L, nKV, hd}), {0, 2, 1, 3}), cos, sin);
       v = mx::transpose(mx::reshape(v, {B, L, nKV, hd}), {0, 2, 1, 3});
@@ -572,8 +612,7 @@ struct Qwen2VLModel::Impl {
                    p + "self_attn.o_proj.weight");
       h = mx::add(h, o);
       array h2 = mx::fast::rms_norm(h, get(p + "post_attention_layernorm.weight"), cfg.rms_norm_eps);
-      array gate = linear_w(h2, p + "mlp.gate_proj.weight");
-      array up = linear_w(h2, p + "mlp.up_proj.weight");
+      auto [gate, up] = gate_up_proj(h2, p);
       h = mx::add(h, linear_w(mx::multiply(mx::multiply(gate, mx::sigmoid(gate)), up),
                               p + "mlp.down_proj.weight"));
     }
@@ -700,7 +739,8 @@ Qwen2VLModel Qwen2VLModel::load(const std::string& weights_path, const Qwen2VLCo
   m.impl_->cfg = cfg;
   auto loaded = mx::load_safetensors(weights_path);
   m.impl_->w = std::move(loaded.first);
-  m.impl_->maybe_quantize();  // no-op unless cfg.quantize_bits > 0
+  m.impl_->fuse_weights();     // q/k/v -> qkv, gate/up -> gate_up (fewer matmul launches)
+  m.impl_->maybe_quantize();   // no-op unless cfg.quantize_bits > 0
   return m;
 }
 
