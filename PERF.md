@@ -32,6 +32,11 @@ assembly, overhead) — use it to target work.
 - **Length-bucketed batched generation** (`--batch`) — content gen 259→~413 tok/s.
 - **Single-sync content vision** (`forward_vision_batch`) — all crops built lazily and
   eval'd in one batch (one GPU sync vs one per crop). Output verified identical.
+- **Cross-page batched layout** (`convert_batched`) — layout images are uniform
+  1036×1036, so all pages' layout vision + generation run in one batched pass. Layout
+  *generation* (batch-1, memory-bandwidth bound page-by-page) sped up **2.38s→1.45s
+  (239→394 tok/s)** on a.pdf (3 pages); total **11.7s→10.75s**, output byte-identical.
+  Scales with page count. (Layout vision stayed flat — compute-bound, as predicted.)
 
 ## Findings — content-vision batching (Tier 1, attempted)
 
@@ -51,11 +56,9 @@ attention. A real speedup needs that kernel (Tier 3 #7) — otherwise per-crop i
 The kept structure (lazy `forward_vision_batch`) is neutral but cleaner (one sync) and
 is the natural seam for a future varlen kernel.
 
-### Most promising untried lever
-**Cross-page layout batching.** The *layout* image is a fixed 1036×1036 (1369 patches)
-for every page → **uniform size, zero padding waste** (unlike content crops). Batching
-all pages' layout vision+generation in one pass would speed the layout phase (≈44% of
-wall on a.pdf) on multi-page docs — the clean batching win the content path can't offer.
+Cross-page layout batching (the clean uniform-size win) was subsequently implemented —
+see "Already done" above. It confirmed the model: **generation** batches well (memory-
+bandwidth bound), **vision** does not (compute-bound).
 
 ## Plan — ranked by ROI
 

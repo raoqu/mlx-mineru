@@ -101,26 +101,52 @@ static json text_lines(const std::string& content, const std::array<double, 4>& 
                        {"spans", json::array({{{"type", ct::kText}, {"content", content}}})}}});
 }
 
-// Process one page: layout detection -> per-block content -> page_info json.
-static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
-                         const mineru::PageImage& pg, int page_idx, bool layout_only,
-                         std::vector<mineru::ContentBlock>* layout_out = nullptr,
-                         const std::string& images_dir = "", int batch_size = 6) {
+// Layout-image preprocessing for one page (1036x1036) + the Layout-Detection prompt.
+struct LayoutPrep {
+  std::vector<float> pv;
+  std::array<int, 3> grid;
+  int n_img;
+  std::vector<int> prompt;
+};
+static LayoutPrep prep_layout(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
+                              const mineru::PageImage& pg) {
   const auto& cfg = model.config();
   std::vector<uint8_t> resized = mineru::resize_bicubic_rgb8(pg.rgb, pg.width, pg.height, 1036, 1036);
   mineru::VisionInput vi = mineru::preprocess_image(resized, 1036, 1036);
-  int n_img = vi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
-  auto _lv0 = Clock::now();
-  std::vector<float> lembeds = model.forward_vision(vi.pixel_values, vi.grid_thw);
-  auto _lv1 = Clock::now();
-  std::vector<int> lprompt = build_prompt(tok, n_img, cfg.image_token_id, "\nLayout Detection:");
-  std::vector<int> lgen = model.generate_multimodal(lprompt, lembeds, n_img, vi.grid_thw, 1200, kEos);
-  g_prof.layout_vision += secs(_lv0, _lv1);
-  g_prof.layout_gen += secs(_lv1, Clock::now());
-  g_prof.layout_tok += (long)lgen.size();
-  std::vector<mineru::ContentBlock> blocks = mineru::parse_layout_output(tok.decode(lgen, false));
-  g_prof.pages += 1;
-  g_prof.blocks += (int)blocks.size();
+  LayoutPrep lp;
+  lp.n_img = vi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
+  lp.grid = vi.grid_thw;
+  lp.pv = std::move(vi.pixel_values);
+  lp.prompt = build_prompt(tok, lp.n_img, cfg.image_token_id, "\nLayout Detection:");
+  return lp;
+}
+
+// Process one page: layout detection -> per-block content -> page_info json.
+// If `precomputed` is given, layout detection is skipped (blocks already known,
+// e.g. from a cross-page batched layout pass).
+static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
+                         const mineru::PageImage& pg, int page_idx, bool layout_only,
+                         std::vector<mineru::ContentBlock>* layout_out = nullptr,
+                         const std::string& images_dir = "", int batch_size = 6,
+                         const std::vector<mineru::ContentBlock>* precomputed = nullptr) {
+  const auto& cfg = model.config();
+  std::vector<mineru::ContentBlock> blocks;
+  if (precomputed) {
+    blocks = *precomputed;
+  } else {
+    LayoutPrep lp = prep_layout(model, tok, pg);
+    auto _lv0 = Clock::now();
+    std::vector<float> lembeds = model.forward_vision(lp.pv, lp.grid);
+    auto _lv1 = Clock::now();
+    std::vector<int> lgen =
+        model.generate_multimodal(lp.prompt, lembeds, lp.n_img, lp.grid, 1200, kEos);
+    g_prof.layout_vision += secs(_lv0, _lv1);
+    g_prof.layout_gen += secs(_lv1, Clock::now());
+    g_prof.layout_tok += (long)lgen.size();
+    blocks = mineru::parse_layout_output(tok.decode(lgen, false));
+    g_prof.pages += 1;
+    g_prof.blocks += (int)blocks.size();
+  }
   std::cerr << "[mlx-mineru] page " << page_idx << ": " << blocks.size() << " blocks\n";
   if (layout_out) *layout_out = blocks;
   if (layout_only) return json::object();
@@ -252,18 +278,61 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
           {"para_blocks", para_blocks}, {"discarded_blocks", discarded}};
 }
 
+// Batch layout detection across ALL pages (uniform 1036x1036 layout images -> no
+// padding waste), then run per-page content. The layout generation — batch-1 and
+// memory-bandwidth bound when done page-by-page — benefits most from batching.
+static json convert_batched(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
+                            std::vector<mineru::PageImage>& pages,
+                            const std::vector<int>& page_idxs, const std::string& images_dir,
+                            int batch_size) {
+  int P = (int)pages.size();
+  std::vector<std::vector<float>> pvs(P);
+  std::vector<std::array<int, 3>> grids(P);
+  std::vector<int> nimgs(P);
+  std::vector<std::vector<int>> prompts(P);
+  for (int p = 0; p < P; ++p) {
+    LayoutPrep lp = prep_layout(model, tok, pages[p]);
+    pvs[p] = std::move(lp.pv);
+    grids[p] = lp.grid;
+    nimgs[p] = lp.n_img;
+    prompts[p] = std::move(lp.prompt);
+  }
+  std::cerr << "[mlx-mineru] batched layout over " << P << " page(s) ...\n";
+  auto _lv0 = Clock::now();
+  std::vector<std::vector<float>> lembeds = model.forward_vision_batch(pvs, grids);
+  auto _lg0 = Clock::now();
+  g_prof.layout_vision += secs(_lv0, _lg0);
+  std::vector<std::vector<int>> lgens =
+      model.generate_multimodal_batch(prompts, lembeds, nimgs, grids, 1200, kEos);
+  g_prof.layout_gen += secs(_lg0, Clock::now());
+  for (auto& g : lgens) g_prof.layout_tok += (long)g.size();
+
+  std::vector<std::vector<mineru::ContentBlock>> blocks(P);
+  for (int p = 0; p < P; ++p) {
+    blocks[p] = mineru::parse_layout_output(tok.decode(lgens[p], false));
+    g_prof.pages += 1;
+    g_prof.blocks += (int)blocks[p].size();
+  }
+  json pdf_info = json::array();
+  for (int p = 0; p < P; ++p)
+    pdf_info.push_back(process_page(model, tok, pages[p], page_idxs[p], /*layout_only=*/false,
+                                    nullptr, images_dir, batch_size, &blocks[p]));
+  return pdf_info;
+}
+
 // Convert an open PDF document (page range) -> pdf_info (middle_json pages).
 static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
                              mineru::PdfDocument& doc, int start_page, int end_page) {
   int npages = doc.page_count();
   int s = std::clamp(start_page, 0, npages - 1);
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
-  json pdf_info = json::array();
+  std::vector<mineru::PageImage> pages;
+  std::vector<int> idxs;
   for (int p = s; p <= e; ++p) {
-    mineru::PageImage pg = doc.render_page(p);
-    pdf_info.push_back(process_page(model, tok, pg, p, /*layout_only=*/false));
+    pages.push_back(doc.render_page(p));
+    idxs.push_back(p);
   }
-  return pdf_info;
+  return convert_batched(model, tok, pages, idxs, /*images_dir=*/"", /*batch_size=*/6);
 }
 
 // Minimal HTTP API (aligns loosely with cli/fast_api.py): GET /health,
@@ -365,13 +434,13 @@ int main(int argc, char** argv) {
   g_prof.load = std::chrono::duration<double>(t_loaded - t0).count();
   json pdf_info = json::array();
   json layout_json = json::array();
-  for (int p = s; p <= e; ++p) {
-    auto _r0 = Clock::now();
-    mineru::PageImage pg = doc.render_page(p);
-    g_prof.raster += secs(_r0, Clock::now());
-    std::vector<mineru::ContentBlock> blocks;
-    json page_info = process_page(model, tok, pg, p, layout_only, &blocks, images_dir, batch_size);
-    if (layout_only) {
+  if (layout_only) {
+    for (int p = s; p <= e; ++p) {
+      auto _r0 = Clock::now();
+      mineru::PageImage pg = doc.render_page(p);
+      g_prof.raster += secs(_r0, Clock::now());
+      std::vector<mineru::ContentBlock> blocks;
+      process_page(model, tok, pg, p, /*layout_only=*/true, &blocks, images_dir, batch_size);
       json jb = json::array();
       for (auto& b : blocks) {
         json o = {{"type", b.type}, {"bbox", {b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]}}};
@@ -379,9 +448,18 @@ int main(int argc, char** argv) {
         jb.push_back(o);
       }
       layout_json.push_back({{"page_idx", p}, {"blocks", jb}});
-    } else {
-      pdf_info.push_back(page_info);
     }
+  } else {
+    // Render all pages, then batch layout detection across them.
+    std::vector<mineru::PageImage> pages;
+    std::vector<int> idxs;
+    for (int p = s; p <= e; ++p) {
+      auto _r0 = Clock::now();
+      pages.push_back(doc.render_page(p));
+      g_prof.raster += secs(_r0, Clock::now());
+      idxs.push_back(p);
+    }
+    pdf_info = convert_batched(model, tok, pages, idxs, images_dir, batch_size);
   }
 
   auto write = [&](const std::string& fname, const std::string& data) {
