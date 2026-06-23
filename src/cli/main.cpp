@@ -17,6 +17,7 @@
 #include "httplib/httplib.h"
 #include "mineru/enums.hpp"
 #include "mineru/image_preprocess.hpp"
+#include "mineru/image_write.hpp"
 #include "mineru/mkcontent.hpp"
 #include "mineru/otsl.hpp"
 #include "mineru/pdf.hpp"
@@ -110,7 +111,8 @@ static json text_lines(const std::string& content, const std::array<double, 4>& 
 // Process one page: layout detection -> per-block content -> page_info json.
 static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
                          const mineru::PageImage& pg, int page_idx, bool layout_only,
-                         std::vector<mineru::ContentBlock>* layout_out = nullptr) {
+                         std::vector<mineru::ContentBlock>* layout_out = nullptr,
+                         const std::string& images_dir = "") {
   const auto& cfg = model.config();
   std::vector<uint8_t> resized = mineru::resize_bicubic_rgb8(pg.rgb, pg.width, pg.height, 1036, 1036);
   mineru::VisionInput vi = mineru::preprocess_image(resized, 1036, 1036);
@@ -164,6 +166,18 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
       pb = {{"type", bt::kInterlineEquation}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
             {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                 {"spans", json::array({{{"type", ct::kInterlineEquation}, {"content", latex}}})}}})}};
+    } else if ((b.type == "image" || b.type == "chart") && !images_dir.empty()) {
+      // Save the cropped region; reference it via image_path (bucket "images").
+      std::string fname = mineru::content_hash_hex(crop) + ".jpg";
+      mineru::write_jpeg(images_dir + "/" + fname, crop, cw, ch);
+      const char* body = (b.type == "chart") ? bt::kChartBody : bt::kImageBody;
+      const char* span = (b.type == "chart") ? ct::kChart : ct::kImage;
+      pb = {{"type", (b.type == "chart") ? bt::kChart : bt::kImage},
+            {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
+            {"blocks", json::array({{{"type", body}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
+                {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
+                    {"spans", json::array({{{"type", span}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}},
+                        {"image_path", fname}, {"content", content}}})}}})}}})}};
     } else {
       pb = {{"type", bt::kText}, {"bbox", {bb[0], bb[1], bb[2], bb[3]}}, {"index", index},
             {"lines", text_lines(mineru::pp::process_text(content), bb)}};
@@ -268,12 +282,22 @@ int main(int argc, char** argv) {
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
   std::cerr << "[mlx-mineru] " << pdf_path << ": pages " << s << ".." << e << " of " << npages << "\n";
 
+  namespace fs = std::filesystem;
+  std::string stem = fs::path(pdf_path).stem().string();
+  fs::path dir = fs::path(out_dir) / stem / "vlm";
+  fs::create_directories(dir);
+  std::string images_dir;
+  if (!layout_only) {
+    images_dir = (dir / "images").string();
+    fs::create_directories(images_dir);
+  }
+
   json pdf_info = json::array();
   json layout_json = json::array();
   for (int p = s; p <= e; ++p) {
     mineru::PageImage pg = doc.render_page(p);
     std::vector<mineru::ContentBlock> blocks;
-    json page_info = process_page(model, tok, pg, p, layout_only, &blocks);
+    json page_info = process_page(model, tok, pg, p, layout_only, &blocks, images_dir);
     if (layout_only) {
       json jb = json::array();
       for (auto& b : blocks) {
@@ -286,11 +310,6 @@ int main(int argc, char** argv) {
       pdf_info.push_back(page_info);
     }
   }
-
-  namespace fs = std::filesystem;
-  std::string stem = fs::path(pdf_path).stem().string();
-  fs::path dir = fs::path(out_dir) / stem / "vlm";
-  fs::create_directories(dir);
 
   auto write = [&](const std::string& fname, const std::string& data) {
     std::ofstream(dir / fname) << data;

@@ -54,6 +54,7 @@ add_library(mineru_core STATIC
   src/core/middle_json.cpp
   src/output/text_utils.cpp
   src/output/mkcontent.cpp
+  src/io/image_write.cpp
 )
 target_include_directories(mineru_core PUBLIC
   ${CMAKE_SOURCE_DIR}/include
