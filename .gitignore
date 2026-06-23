@@ -23,3 +23,6 @@ compile_commands.json
 
 # pdfium prebuilt binary (large) — fetch via scripts/fetch_pdfium.sh
 /third_party/pdfium/
+
+# CLI output
+/output/

@@ -19,13 +19,16 @@ Requires CMake ≥ 3.20 and a C++20 compiler (Apple clang). Header-only dependen
 ## CLI — PDF → Markdown
 
 ```bash
-./build/mlx-mineru -p demo.pdf --page 0 -o out.md      # full PDF -> Markdown
-./build/mlx-mineru -p demo.pdf --page 0 --layout-only  # just the layout (JSON)
+./build/mlx-mineru -p demo.pdf -o output            # whole PDF -> output/demo/vlm/
+./build/mlx-mineru -p demo.pdf -s 0 -e 2 -o output  # pages 0..2
+./build/mlx-mineru -p demo.pdf --layout-only -o output
 ```
 
 Runs the Qwen2-VL **two-step extract** (layout detection → per-block content
 recognition) natively on Apple Silicon (MLX/Metal), **no Python at runtime**,
-assembles `middle_json`, and renders Markdown via the verified `union_make`.
+assembles `middle_json`, and writes MinerU's standard layout
+`output/<name>/vlm/{<name>.md, <name>_content_list.json, <name>_middle.json}`
+via the verified `union_make`.
 
 On a real paper page it produces a clean Markdown document — title as a heading,
 authors with inline LaTeX (`\( ^{a,c} \)`), an `# Abstract` section with inline

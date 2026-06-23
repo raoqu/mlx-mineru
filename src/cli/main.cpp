@@ -6,6 +6,7 @@
 // simplified; see AGENT.md.)
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -165,14 +166,14 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
 
 int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
-  std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_path;
+  std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
   int start_page = 0, end_page = -1;
   bool layout_only = false;
   app.add_option("-p,--path", pdf_path, "Input PDF path")->required();
   app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
   app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
   app.add_option("-e,--end", end_page, "Last 0-based page inclusive (default: last)");
-  app.add_option("-o,--output", out_path, "Output file (.md, or .json with --layout-only)");
+  app.add_option("-o,--output", out_dir, "Output directory (MinerU layout: <out>/<name>/vlm/)");
   app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON");
   CLI11_PARSE(app, argc, argv);
 
@@ -206,20 +207,29 @@ int main(int argc, char** argv) {
     }
   }
 
-  std::string result;
+  namespace fs = std::filesystem;
+  std::string stem = fs::path(pdf_path).stem().string();
+  fs::path dir = fs::path(out_dir) / stem / "vlm";
+  fs::create_directories(dir);
+
+  auto write = [&](const std::string& fname, const std::string& data) {
+    std::ofstream(dir / fname) << data;
+    std::cerr << "[mlx-mineru] wrote " << (dir / fname).string() << "\n";
+  };
+
   if (layout_only) {
-    result = layout_json.dump(2);
+    write(stem + "_layout.json", layout_json.dump(2));
   } else {
-    result = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+    // MinerU-style outputs, all from the verified union_make / middle_json contract.
+    std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+    json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+    json middle = {{"pdf_info", pdf_info}, {"_backend", "vlm"}, {"_version_name", mineru::kMineruVersion}};
+    write(stem + ".md", md);
+    write(stem + "_content_list.json", content_list.dump(4));
+    write(stem + "_middle.json", middle.dump(4));
   }
 
   auto t1 = std::chrono::steady_clock::now();
   std::cerr << "[mlx-mineru] done in " << std::chrono::duration<double>(t1 - t0).count() << "s\n";
-  if (out_path.empty()) {
-    std::cout << result << "\n";
-  } else {
-    std::ofstream(out_path) << result;
-    std::cerr << "[mlx-mineru] wrote " << out_path << "\n";
-  }
   return 0;
 }
