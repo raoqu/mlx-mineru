@@ -501,8 +501,9 @@ static PipelineModels load_pipeline_models(const std::string& models) {
 }
 
 // Convert pages [s..e] of a document to middle_json pdf_info using pre-loaded models.
-static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& doc, int dpi,
-                                     int s, int e) {
+// If model_list_out is non-null it receives the raw model_list (for {name}_model.json).
+static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& doc, int dpi, int s,
+                                     int e, json* model_list_out = nullptr) {
   json model_list = json::array();
   std::vector<mineru::PipelinePageImage> pages;
   for (int p = s; p <= e; ++p) {
@@ -519,7 +520,9 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
       pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
     pages.push_back(std::move(pg));
   }
-  return mineru::pipeline_assemble_pages(model_list, pages, *pm.rec);
+  json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pm.rec);
+  if (model_list_out) *model_list_out = std::move(model_list);
+  return pdf_info;
 }
 
 // Native pipeline backend (one-shot): render -> layout + OCR det -> model_list ->
@@ -537,7 +540,8 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   PipelineModels pm = load_pipeline_models(models);
   std::cerr << "[mlx-mineru] pipeline models loaded in " << secs(t0, Clock::now()) << "s\n";
   auto t_inf = Clock::now();
-  json pdf_info = pipeline_doc_to_pdf_info(pm, doc, dpi, s, e);
+  json model_list;
+  json pdf_info = pipeline_doc_to_pdf_info(pm, doc, dpi, s, e, &model_list);
 
   std::string stem = fs::path(pdf_path).stem().string();
   fs::path dir = fs::path(out_dir) / stem / "pipeline";
@@ -545,15 +549,21 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   std::string md =
       mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
   json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+  json content_list_v2 = mineru::union_make(pdf_info, mineru::make_mode::kContentListV2, "images");
   json middle = {{"pdf_info", pdf_info}, {"_backend", "pipeline"},
                  {"_version_name", mineru::kMineruVersion}};
   auto write = [&](const std::string& fn, const std::string& data) {
     std::ofstream(dir / fn) << data;
     std::cerr << "[mlx-mineru] wrote " << (dir / fn).string() << "\n";
   };
+  // Same artifact set as MinerU do_parse (default f_dump_* flags all on).
   write(stem + ".md", md);
   write(stem + "_content_list.json", content_list.dump(4));
+  write(stem + "_content_list_v2.json", content_list_v2.dump(4));
   write(stem + "_middle.json", middle.dump(4));
+  write(stem + "_model.json", model_list.dump(4));
+  { std::ifstream in(pdf_path, std::ios::binary); std::ofstream(dir / (stem + "_origin.pdf"),
+      std::ios::binary) << in.rdbuf(); }
   std::cerr << "[mlx-mineru] pipeline inference " << secs(t_inf, Clock::now()) << "s; total "
             << secs(t0, Clock::now()) << "s\n";
   return 0;
@@ -819,13 +829,19 @@ int main(int argc, char** argv) {
   if (layout_only) {
     write(stem + "_layout.json", layout_json.dump(2));
   } else {
-    // MinerU-style outputs, all from the verified union_make / middle_json contract.
+    // MinerU-style outputs (do_parse artifact set), all from the verified union_make /
+    // middle_json contract.
     std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
     json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+    json content_list_v2 = mineru::union_make(pdf_info, mineru::make_mode::kContentListV2, "images");
     json middle = {{"pdf_info", pdf_info}, {"_backend", "vlm"}, {"_version_name", mineru::kMineruVersion}};
     write(stem + ".md", md);
     write(stem + "_content_list.json", content_list.dump(4));
+    write(stem + "_content_list_v2.json", content_list_v2.dump(4));
     write(stem + "_middle.json", middle.dump(4));
+    { std::ifstream in(pdf_path, std::ios::binary); std::ofstream(dir / (stem + "_origin.pdf"),
+        std::ios::binary) << in.rdbuf(); }
+    std::cerr << "[mlx-mineru] wrote " << (dir / (stem + "_origin.pdf")).string() << "\n";
   }
   g_prof.assembly += secs(_a0, Clock::now());
 
