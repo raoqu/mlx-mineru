@@ -239,3 +239,20 @@ if(HAVE_ORT AND EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
   add_test(NAME onnx_smoke
     COMMAND test_onnx_smoke ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
 endif()
+
+# ---- Pipeline backend (ONNX Runtime models) ---------------------------------
+if(HAVE_ORT)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp)
+  target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm thirdparty_headers)
+
+  if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
+    add_executable(test_layout_det tests/test_layout_det.cpp)
+    target_include_directories(test_layout_det PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_layout_det PRIVATE mineru_pipeline)
+    set_target_properties(test_layout_det PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
+    add_test(NAME layout_det
+      COMMAND test_layout_det ${CMAKE_SOURCE_DIR}/models/pipeline/Layout
+              ${CMAKE_SOURCE_DIR}/tests/golden)
+  endif()
+endif()

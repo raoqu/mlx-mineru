@@ -55,6 +55,10 @@ largest remaining task; it advances phase by phase with golden verification.
   `onnxruntime` target. `ctest onnx_smoke` loads `layout.onnx` in C++ and runs it
   — output shapes correct (logits 1x300x25, pred_boxes 1x300x4, order_logits
   1x300x300). The pipeline runtime path is proven end-to-end in C++.
-- **Next (P1 cont.)**: C++ layout module — preprocess (resize 800x800 bicubic,
-  /255, NCHW) + postprocess (sigmoid, per-class thresholds, box decode + scale to
-  page, geometric reading order) ; golden vs MinerU `PPDocLayoutV2.predict`.
+- **P1 layout detector ✅**: `LayoutDetector` (`src/pipeline/layout_det.cpp`) —
+  onnxruntime inference + core post-process (box decode -> scale -> sigmoid ->
+  topk -> conf>=0.45 -> clip). `ctest layout_det` matches the Python core golden
+  EXACTLY (same labels/boxes/scores on a real page). New `mineru_pipeline` lib.
+- **Next**: MinerU heuristic filters layer (IoU-0.9 dedup, formula merge/relabel,
+  header/footer relabel, paddlex filter) + reading-order decode; then wire layout
+  -> per-region OCR/table/formula -> middle_json. Then P2 (table, already ONNX).

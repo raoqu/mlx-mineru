@@ -1,0 +1,117 @@
+{
+  "size": 800,
+  "conf": 0.45,
+  "input_rgb": "layout_input.rgb",
+  "detections": [
+    {
+      "cls_id": 22,
+      "label": "text",
+      "score": 0.9874,
+      "bbox": [
+        94,
+        598,
+        704,
+        719
+      ]
+    },
+    {
+      "cls_id": 22,
+      "label": "text",
+      "score": 0.9871,
+      "bbox": [
+        95,
+        460,
+        703,
+        580
+      ]
+    },
+    {
+      "cls_id": 22,
+      "label": "text",
+      "score": 0.9705,
+      "bbox": [
+        96,
+        237,
+        702,
+        283
+      ]
+    },
+    {
+      "cls_id": 22,
+      "label": "text",
+      "score": 0.9412,
+      "bbox": [
+        135,
+        341,
+        542,
+        362
+      ]
+    },
+    {
+      "cls_id": 17,
+      "label": "paragraph_title",
+      "score": 0.9408,
+      "bbox": [
+        216,
+        137,
+        584,
+        171
+      ]
+    },
+    {
+      "cls_id": 22,
+      "label": "text",
+      "score": 0.9396,
+      "bbox": [
+        134,
+        302,
+        466,
+        322
+      ]
+    },
+    {
+      "cls_id": 17,
+      "label": "paragraph_title",
+      "score": 0.9326,
+      "bbox": [
+        298,
+        71,
+        503,
+        106
+      ]
+    },
+    {
+      "cls_id": 22,
+      "label": "text",
+      "score": 0.9229,
+      "bbox": [
+        145,
+        421,
+        359,
+        441
+      ]
+    },
+    {
+      "cls_id": 17,
+      "label": "paragraph_title",
+      "score": 0.8623,
+      "bbox": [
+        108,
+        381,
+        211,
+        402
+      ]
+    },
+    {
+      "cls_id": 17,
+      "label": "paragraph_title",
+      "score": 0.7445,
+      "bbox": [
+        136,
+        198,
+        223,
+        218
+      ]
+    }
+  ]
+}
