@@ -251,9 +251,9 @@ endif()
 
 # ---- Pipeline backend (ONNX Runtime models) ---------------------------------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp)
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
-  target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm thirdparty_headers)
+  target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm mineru_core thirdparty_headers)
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
     add_executable(test_layout_det tests/test_layout_det.cpp)
@@ -324,6 +324,15 @@ if(HAVE_ORT)
     target_link_libraries(test_pipeline_md PRIVATE mineru_pipeline mineru_core mineru_pdf)
     set_target_properties(test_pipeline_md PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
     add_test(NAME pipeline_md COMMAND test_pipeline_md ${CMAKE_SOURCE_DIR}/tests/golden
+              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
+              ${CMAKE_SOURCE_DIR}/a.pdf)
+
+    add_executable(test_pipeline_multipage tests/test_pipeline_multipage.cpp)
+    target_include_directories(test_pipeline_multipage PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_pipeline_multipage PRIVATE mineru_pipeline mineru_core mineru_pdf)
+    set_target_properties(test_pipeline_multipage PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
+    add_test(NAME pipeline_multipage COMMAND test_pipeline_multipage ${CMAKE_SOURCE_DIR}/tests/golden
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/a.pdf)

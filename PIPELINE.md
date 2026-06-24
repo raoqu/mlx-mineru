@@ -160,6 +160,13 @@ largest remaining task; it advances phase by phase with golden verification.
   vs `union_make` on MinerU's golden middle_json**. The remaining work to a faithful CLI is
   the per-page driver loop + the non-text paths (digital pdftext extraction, visual spans,
   UNet tables).
+- **P5 multi-page driver ✅**: `pipeline_assemble_pages` (`src/pipeline/pipeline_driver.cpp`)
+  runs assemble + post-OCR text-fill per page → pdf_info. `ctest pipeline_multipage` drives
+  the **whole a.pdf** (3 pages) from the golden model_list + PdfDocument renders →
+  `union_make` → one Markdown doc — correct heading hierarchy (`## 1.1`, `## 1.1.1`),
+  numbered lists, paragraphs across pages — **ASCII-exact vs union_make on MinerU's golden**.
+  Remaining for a from-scratch CLI: generate the model_list in C++ (layout detector +
+  reading-order head + OCR det) instead of consuming MinerU's; then the non-text paths.
 - **Also queued**: UNet wired-table structure; digital-PDF text extraction (pdftext) for
   text-layer PDFs; visual-span path (image/table/formula) in the assembly; para_split
   cross-block merging for multi-block paragraphs.
