@@ -112,6 +112,15 @@ largest remaining task; it advances phase by phase with golden verification.
   for decode — matches HF `decode(skip_special_tokens)` exactly). `ctest mfr`: model path
   (pixel→ids/latex) **exact**, end-to-end (raw crop→latex) **also exact** on a rendered
   formula. Models gitignored; goldens (pixel, ids, latex, input) committed.
-- **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
-  layout heuristic-filter layer + reading order; then assembly (P5) that ties layout +
-  OCR + formula + table into middle_json -> union_make.
+- **P2 table structure (SLANet+) ✅**: `TableRecognizer` (`src/pipeline/table_rec.cpp`) —
+  faithful port of MinerU slanet_plus: TablePreprocess (resize-488 + BGR normalize + pad)
+  + slanet-plus.onnx (loc_preds[L,8] + structure_probs[L,50]) + TableLabelDecode (per-step
+  argmax, `<td>` bbox decode) + `adapt_slanet_plus` + `TableMatch` (get_boxes_recs,
+  filter-by-min-y, per-OCR-box best cell by (1-IoU, distance), HTML assembly with
+  colspan/rowspan + `<b>` handling). `ctest table`: structure tokens **exact**, cells
+  within **0.03px**, and full **HTML matches MinerU exactly** (OCR'd the table with the
+  onnx det+rec chain, fed the same ocr_result to MinerU's TableMatch for the golden).
+  Wired-table UNet path is the remaining table variant.
+- **Also queued**: UNet wired-table structure; the layout heuristic-filter layer +
+  reading order; then assembly (P5) that ties layout + OCR + formula + table into
+  middle_json -> union_make for the first full pipeline-backend page -> Markdown.
