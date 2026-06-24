@@ -12,6 +12,9 @@
 
 #include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
 #include "onnxruntime_cxx_api.h"
+#ifdef MINERU_HAVE_OPENCV
+#include <opencv2/imgproc.hpp>
+#endif
 
 namespace mineru {
 namespace {
@@ -171,58 +174,52 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
 }
 
 FormulaResult FormulaRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int h) const {
-  // --- UniMERNet preprocess: crop_margin -> aspect resize -> center pad -> gray normalize ---
-  // crop_margin_numpy: grayscale, min-max stretch, threshold <200, bounding box of content.
-  auto gray_at = [&](int x, int y) {
-    const uint8_t* p = &rgb[(static_cast<size_t>(y) * w + x) * 3];
-    return (p[0] * 4899 + p[1] * 9617 + p[2] * 1868 + 8192) >> 14;  // cv2 RGB2GRAY
-  };
-  int gmin = 255, gmax = 0;
-  for (int y = 0; y < h; ++y)
-    for (int x = 0; x < w; ++x) {
-      int g = gray_at(x, y);
-      gmin = std::min(gmin, g);
-      gmax = std::max(gmax, g);
-    }
-  int cx0 = 0, cy0 = 0, cw = w, ch = h;
-  if (gmax > gmin) {
-    int xmin = w, ymin = h, xmax = -1, ymax = -1;
-    for (int y = 0; y < h; ++y)
-      for (int x = 0; x < w; ++x) {
-        int norm = ((gray_at(x, y) - gmin) * 255) / (gmax - gmin);
-        if (norm < 200) {  // content pixel
-          xmin = std::min(xmin, x); ymin = std::min(ymin, y);
-          xmax = std::max(xmax, x); ymax = std::max(ymax, y);
-        }
-      }
-    if (xmax >= xmin && ymax >= ymin) {
-      cx0 = xmin; cy0 = ymin; cw = xmax - xmin + 1; ch = ymax - ymin + 1;
+#ifdef MINERU_HAVE_OPENCV
+  // Faithful UniMERNet preprocess via real cv2 (crop_margin_numpy -> aspect resize ->
+  // center pad -> gray normalize), so it matches MinerU byte-for-byte.
+  cv::Mat img(h, w, CV_8UC3, const_cast<uint8_t*>(rgb.data()));  // RGB
+  // crop_margin_numpy: gray, min-max stretch, threshold <200, boundingRect of content.
+  cv::Mat gray;
+  cv::cvtColor(img, gray, cv::COLOR_RGB2GRAY);
+  double gmin, gmax;
+  cv::minMaxLoc(gray, &gmin, &gmax);
+  cv::Mat crop = img;
+  if (gmax != gmin) {
+    cv::Mat norm;
+    gray.convertTo(norm, CV_64F);
+    norm = (norm - gmin) / (gmax - gmin) * 255.0;
+    // numpy .astype(uint8) TRUNCATES (not rounds); for the <200 threshold floor(n)<200 <=> n<200,
+    // so threshold the float directly (cv::convertTo would round and shift the edge by 0.5).
+    cv::Mat binary = (norm < 200.0);  // 0/255
+    std::vector<cv::Point> nz;
+    cv::findNonZero(binary, nz);
+    if (!nz.empty()) {
+      cv::Rect r = cv::boundingRect(nz);
+      crop = img(r);
     }
   }
-  std::vector<uint8_t> crop(static_cast<size_t>(cw) * ch * 3);
-  for (int y = 0; y < ch; ++y)
-    for (int x = 0; x < cw; ++x)
-      for (int c = 0; c < 3; ++c)
-        crop[(static_cast<size_t>(y) * cw + x) * 3 + c] =
-            rgb[(static_cast<size_t>(cy0 + y) * w + (cx0 + x)) * 3 + c];
-
+  int cw = crop.cols, ch = crop.rows;
   double scale = std::min((double)kTargetH / ch, (double)kTargetW / cw);
-  int nh = (int)(ch * scale), nw = (int)(cw * scale);
-  nh = std::max(1, nh);
-  nw = std::max(1, nw);
-  std::vector<uint8_t> resized = resize_rgb8_cv(crop, cw, ch, nw, nh, kInterLinear);
-
+  int nh = std::max(1, (int)(ch * scale)), nw = std::max(1, (int)(cw * scale));
+  cv::Mat resized;
+  cv::resize(crop, resized, cv::Size(nw, nh));
+  // center pad (copyMakeBorder, BORDER_CONSTANT black) to 192x672.
   int pad_w = (kTargetW - nw) / 2, pad_h = (kTargetH - nh) / 2;
-  // gray-normalize directly into the padded canvas (black padding -> gray 0).
-  std::vector<float> px(static_cast<size_t>(kTargetH) * kTargetW, (0.0f - 0.7931f * 255.0f) / (0.1738f * 255.0f));
-  for (int y = 0; y < nh; ++y)
-    for (int x = 0; x < nw; ++x) {
-      const uint8_t* p = &resized[(static_cast<size_t>(y) * nw + x) * 3];
-      int g = (p[0] * 4899 + p[1] * 9617 + p[2] * 1868 + 8192) >> 14;
-      px[static_cast<size_t>(pad_h + y) * kTargetW + (pad_w + x)] =
-          (g - 0.7931f * 255.0f) / (0.1738f * 255.0f);
-    }
+  cv::Mat padded;
+  cv::copyMakeBorder(resized, padded, pad_h, kTargetH - nh - pad_h, pad_w, kTargetW - nw - pad_w,
+                     cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+  // to_normalized_gray_tensor: RGB2GRAY + (g - 0.7931*255)/(0.1738*255).
+  cv::Mat pg;
+  cv::cvtColor(padded, pg, cv::COLOR_RGB2GRAY);
+  std::vector<float> px(static_cast<size_t>(kTargetH) * kTargetW);
+  for (int y = 0; y < kTargetH; ++y)
+    for (int x = 0; x < kTargetW; ++x)
+      px[(size_t)y * kTargetW + x] = (pg.at<uint8_t>(y, x) - 0.7931f * 255.0f) / (0.1738f * 255.0f);
   return recognize_pixel(px, kTargetH, kTargetW);
+#else
+  (void)rgb; (void)w; (void)h;
+  return {};
+#endif
 }
 
 }  // namespace mineru

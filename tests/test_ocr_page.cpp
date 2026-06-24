@@ -40,18 +40,16 @@ int main(int argc, char** argv) {
 
   // The chain preserves order (sorted_boxes + merge), so compare positionally. Boxes are
   // checked within a few px and text by exact match. NOTE: we don't link OpenCV, so our
-  // bilinear differs from cv2.resize by up to 1 LSB (cv2 itself isn't bit-exact across its
-  // own scalar/SIMD builds). That sub-pixel delta can shift a det box ~1px and -- because
-  // rec pads each batch to its widest crop's aspect -- very rarely flip one repeated
-  // glyph (here a doubled em-dash). So we require all boxes within 4px and >=n-1 lines
-  // exact, with at most 1 line differing.
+  // The pipeline now routes resize + DB postprocess through real OpenCV (cv2 4.13.0), so the
+  // det boxes / rec crops match MinerU and all line texts are exact. Boxes are still checked
+  // within a few px (residual <=1px on a few boxes from the pyclipper unclip, no text impact).
   int text_ok = 0, box_ok = 0;
   size_t n = std::min(lines.size(), want.size());
   for (size_t i = 0; i < n; ++i) {
     std::string wt = want[i]["text"].get<std::string>();
     bool t = (lines[i].text == wt);
     text_ok += t;
-    if (!t) std::cerr << "  line " << i << " text differs (resize-cascade):\n    got : "
+    if (!t) std::cerr << "  line " << i << " text differs:\n    got : "
                       << lines[i].text << "\n    want: " << wt << "\n";
     float maxd = 0;
     for (int k = 0; k < 4; ++k) {
@@ -61,7 +59,7 @@ int main(int argc, char** argv) {
     if (maxd <= 4.0f) ++box_ok;
     else std::cerr << "  line " << i << " box maxd=" << maxd << "\n";
   }
-  CHECK_MSG(text_ok >= (int)n - 1, ">= n-1 line texts exact");
+  CHECK_MSG(text_ok == (int)n, "all line texts exact (cv2 resize + DB postprocess)");
   CHECK_MSG(box_ok == (int)n, "all line boxes match within 4px");
   std::cerr << "ocr_page: " << text_ok << "/" << n << " texts exact, " << box_ok << "/" << n
             << " boxes within 4px of MinerU\n";

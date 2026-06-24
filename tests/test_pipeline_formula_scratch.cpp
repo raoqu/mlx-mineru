@@ -65,10 +65,12 @@ int main(int argc, char** argv) {
     else std::cerr << "  strict diff:\n    got : " << got << "\n    want: " << exp << "\n";
   }
   std::cerr << "formula_scratch: strict (golden bbox) " << strict_ok << "/" << want.size() << "\n";
-  // The MFR greedy is bit-exact given identical input; the residual is our bilinear vs
-  // cv2.resize in the formula preprocess (same ≤1 LSB class as ocr_page), which can flip a
-  // rare ambiguous stylized glyph. Require all-but-one exact.
-  CHECK_MSG(strict_ok >= (int)want.size() - 1, "MFR matches golden latex (modulo resize LSB)");
+  // The MFR preprocess is now byte-exact (full cv2, verified diff 0 vs MinerU's m.transform)
+  // and the greedy decode is bit-exact. The lone residual is a sub-pixel render difference:
+  // our vendored pdfium anti-aliases demo1 p2 ~8% differently from pypdfium2's build (same
+  // pdfium-version class as the digital-text codepoints), which flips one ambiguous stylized
+  // glyph (script U). Require all-but-one exact.
+  CHECK_MSG(strict_ok >= (int)want.size() - 1, "MFR matches golden latex (modulo pdfium render)");
 
   // --- scratch: detect + recognize via the native pipeline ---
   mineru::LayoutDetector layout = mineru::LayoutDetector::load(models + "/Layout");
