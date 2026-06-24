@@ -1,5 +1,10 @@
 # DIFF — mlx-mineru vs. MinerU (Python, `~/research/MinerU`, 3.4.0)
 
+> ⚠️ **SUPERSEDED for the pipeline backend** — this doc predates the native
+> pipeline-backend work (layout/OCR/formula/table → middle_json → Markdown is now
+> implemented). See [GAP.md](GAP.md) for the current, accurate gap analysis. The VLM
+> sections below remain valid.
+
 Functional differences between this C++/MLX reimplementation and upstream MinerU.
 Legend: ✅ parity (verified against the source/reference) · 🟡 simplified/partial ·
 ❌ not implemented.
