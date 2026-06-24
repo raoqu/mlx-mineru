@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "mineru/table_rec.hpp"  // TableOcrItem
+
 namespace mineru {
 
 class WiredTableRecognizer {
@@ -43,6 +45,11 @@ class WiredTableRecognizer {
   // Stage 4: logical grid -> HTML. cell_text maps cell index -> text (empty -> structure
   // only). Faithful to plot_html_table (grid build + noise-edge trim + rowspan/colspan).
   static std::string plot_html(const Structure& s, const std::vector<std::string>& cell_text);
+
+  // Full wired path: RGB crop + OCR boxes -> HTML. Stages 1-5 (segment -> cells -> grid ->
+  // match OCR into cells -> HTML). Common-case OCR matching (each box -> one cell).
+  std::string recognize_html(const std::vector<uint8_t>& rgb, int w, int h,
+                             const std::vector<TableOcrItem>& ocr) const;
 
  private:
   WiredTableRecognizer();

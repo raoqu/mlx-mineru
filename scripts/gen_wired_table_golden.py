@@ -67,10 +67,55 @@ def main():
     polys42 = np.array([box_4_1_poly_to_box_4_2(b) for b in polys]) if polys is not None else None
     struct_html = plot_html_table(logi, {}, polys42) if polys is not None else ""
 
+    # Stage 5 golden: OCR the table (onnx det+rec) + full WiredTableRecognition -> pred_html.
+    import math
+    OCR = os.path.join(HERE, "models", "pipeline", "OCR")
+    from mineru.model.utils.pytorchocr.data import create_operators, transform
+    from mineru.model.utils.pytorchocr.postprocess.db_postprocess import DBPostProcess
+    from mineru.utils.ocr_utils import sorted_boxes as ocr_sort, merge_det_boxes, get_rotate_crop_image_for_text_rec
+    import onnxruntime as ort2
+    H_, WB, MINW, MAXW, BATCH = 48, 320, 16, 2560, 6
+    pre = create_operators([
+        {"DetResizeForTest": {"limit_side_len": 960, "limit_type": "max", "max_side_limit": 4000}},
+        {"NormalizeImage": {"std": [0.229, 0.224, 0.225], "mean": [0.485, 0.456, 0.406], "scale": "1./255.", "order": "hwc"}},
+        {"ToCHWImage": None}, {"KeepKeys": {"keep_keys": ["image", "shape"]}}])
+    post = DBPostProcess(thresh=0.3, box_thresh=0.6, max_candidates=1000, unclip_ratio=1.5, use_dilation=False, score_mode="fast", box_type="quad")
+    chars = ["blank"] + [l.decode("utf-8").rstrip("\r\n") for l in open(os.path.join(OCR, "ppocrv6_dict.txt"), "rb")] + [" "]
+    d = transform({"image": bgr.copy(), "polys": np.zeros((0, 4, 2), np.float32)}, pre)
+    ds = ort2.InferenceSession(os.path.join(OCR, "ocr_det.onnx"), providers=["CPUExecutionProvider"])
+    dpred = ds.run(None, {ds.get_inputs()[0].name: d[0][None].astype(np.float32)})[0]
+    boxes = [np.array(b).reshape(-1, 2).astype(np.float32) for b in post({"maps": dpred}, np.array([d[1]]))[0]["points"]]
+    boxes = merge_det_boxes(ocr_sort(boxes))
+    crops = [get_rotate_crop_image_for_text_rec(bgr, np.array(b, np.float32).copy()) for b in boxes]
+    rs = ort2.InferenceSession(os.path.join(OCR, "ocr_rec.onnx"), providers=["CPUExecutionProvider"])
+    widths = [c.shape[1] / float(c.shape[0]) for c in crops]
+    order = np.argsort(np.array(widths))
+    rec = [("", 0.0)] * len(crops)
+    for beg in range(0, len(crops), BATCH):
+        end = min(len(crops), beg + BATCH)
+        mw = widths[order[end - 1]]
+        for ino in range(beg, end):
+            c = crops[order[ino]]; ch, cw = c.shape[:2]
+            imgW = max(min(int(H_ * max(mw, WB / H_)), MAXW), MINW)
+            rw = min(imgW, int(max(math.ceil(H_ * cw / ch), MINW)))
+            rimg = cv2.resize(c, (rw, H_)) / 127.5 - 1.0
+            inp2 = np.zeros((1, 3, H_, imgW), np.float32); inp2[0, :, :, :rw] = rimg.transpose(2, 0, 1)
+            lg = rs.run(None, {rs.get_inputs()[0].name: inp2})[0][0]; idx = lg.argmax(1); t = ""; prev = -1
+            for k in range(len(idx)):
+                b = int(idx[k])
+                if b != 0 and b != prev: t += chars[b]
+                prev = b
+            rec[order[ino]] = (t, 1.0)
+    ocr_result = [[b.tolist(), t, s] for b, (t, s) in zip(boxes, rec)]
+    wired_full = WiredTableRecognition(WiredTableInput(model_path=UNET))
+    out2 = wired_full(bgr.copy(), ocr_result=ocr_result, need_ocr=True)
+    pred_html = out2.pred_html
+
     meta = {"input": "wired_table_input.rgb", "w": int(w), "h": int(h),
             "inp_shape": list(inp.shape), "seg_shape": list(pred.shape),
             "n_cells": int(len(polys)) if polys is not None else 0,
-            "structure_html": struct_html}
+            "structure_html": struct_html, "pred_html": pred_html,
+            "ocr": [{"box": b, "text": t, "score": s} for b, t, s in ocr_result]}
     json.dump(meta, open(os.path.join(GOLDEN, "wired_table.json"), "w"), indent=1)
     if polys is not None:
         np.array(polys).astype(np.float32).tofile(os.path.join(GOLDEN, "wired_table_polys.f32"))

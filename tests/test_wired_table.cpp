@@ -112,5 +112,23 @@ int main(int argc, char** argv) {
   CHECK_MSG(html_ok, "structure HTML matches MinerU (noise-edge trim + rowspan/colspan)");
   if (!html_ok) std::cerr << "  got : " << html << "\n  want: " << want_html << "\n";
   std::cerr << "wired html: " << (html_ok ? "matches" : "DIFFERS") << " MinerU (4x4, sliver trimmed)\n";
+
+  // Stage 5: full path with OCR -> text-bearing HTML vs golden pred_html.
+  if (g.contains("ocr") && g.contains("pred_html")) {
+    std::vector<mineru::TableOcrItem> ocr;
+    for (auto& it : g["ocr"]) {
+      mineru::TableOcrItem o;
+      for (int k = 0; k < 4; ++k) o.box[k] = {it["box"][k][0].get<float>(), it["box"][k][1].get<float>()};
+      o.text = it["text"].get<std::string>();
+      o.score = it["score"].get<float>();
+      ocr.push_back(o);
+    }
+    std::string full = wt.recognize_html(rgb, w, h, ocr);
+    std::string want_full = g["pred_html"].get<std::string>();
+    bool full_ok = (full == want_full);
+    CHECK_MSG(full_ok, "text-bearing HTML matches MinerU (OCR-cell matching)");
+    if (!full_ok) std::cerr << "  got : " << full << "\n  want: " << want_full << "\n";
+    std::cerr << "wired full HTML: " << (full_ok ? "matches" : "DIFFERS") << " MinerU\n";
+  }
   return TEST_SUMMARY();
 }

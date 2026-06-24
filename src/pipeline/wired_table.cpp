@@ -502,4 +502,93 @@ std::string WiredTableRecognizer::plot_html(const Structure& s,
   return html + "</table></body></html>";
 }
 
+// ---- Stage 5: OCR-cell matching -> text-bearing HTML ------------------------
+namespace {
+struct OcrBox { double x0, y0, x1, y1; std::string text; };
+}  // namespace
+
+std::string WiredTableRecognizer::recognize_html(const std::vector<uint8_t>& rgb, int w, int h,
+                                                 const std::vector<TableOcrItem>& ocr) const {
+  Structure st = recognize_structure(rgb, w, h);
+  int N = (int)st.polygons.size();
+  if (N == 0) return "<html><body><table></table></body></html>";
+  // pred cell AABBs.
+  std::vector<std::array<double, 4>> pred(N);
+  for (int j = 0; j < N; ++j) {
+    auto& p = st.polygons[j];
+    pred[j] = {std::min({p[0], p[2], p[4], p[6]}), std::min({p[1], p[3], p[5], p[7]}),
+               std::max({p[0], p[2], p[4], p[6]}), std::max({p[1], p[3], p[5], p[7]})};
+  }
+  // match_ocr_cell (common case): each OCR box -> best cell by contained / iou.
+  std::vector<std::vector<OcrBox>> cellbox(N);
+  for (const auto& o : ocr) {
+    double ox0 = o.box[0][0], oy0 = o.box[0][1], ox1 = o.box[2][0], oy1 = o.box[2][1];
+    double oa = (ox1 - ox0) * (oy1 - oy0);
+    std::vector<int> cand;
+    std::vector<double> cov(N, 0), iouv(N, 0);
+    for (int j = 0; j < N; ++j) {
+      auto& p = pred[j];
+      double ix = std::max(0.0, std::min(ox1, p[2]) - std::max(ox0, p[0]));
+      double iy = std::max(0.0, std::min(oy1, p[3]) - std::max(oy0, p[1]));
+      double ia = ix * iy;
+      bool inter = !(ox1 < p[0] || ox0 > p[2] || oy1 < p[1] || oy0 > p[3]);
+      double pa = (p[2] - p[0]) * (p[3] - p[1]);
+      double outside = oa > 0 ? (oa - ia) / oa : 0;
+      double uni = oa + pa - ia, iou = (uni != 0) ? ia / uni : 1.0;
+      if (!inter) iou = 0;
+      cov[j] = oa > 0 ? ia / oa : 0;
+      iouv[j] = iou;
+      if (inter && (outside < 0.6 || iou > 0.8)) cand.push_back(j);
+    }
+    int best = -1;
+    if (cand.size() == 1) best = cand[0];
+    else if (cand.size() > 1) {
+      std::sort(cand.begin(), cand.end(),
+                [&](int a, int b) { return cov[a] != cov[b] ? cov[a] > cov[b] : iouv[a] > iouv[b]; });
+      int b0 = cand[0], b1 = cand[1];
+      double cx = (ox0 + ox1) / 2, cy = (oy0 + oy1) / 2;
+      std::vector<int> hits;
+      for (int j : cand)
+        if (pred[j][0] <= cx && cx < pred[j][2] && pred[j][1] <= cy && cy <= pred[j][3]) hits.push_back(j);
+      if (hits.size() == 1 && hits[0] == b0 && cov[b0] >= 0.55 && cov[b0] - cov[b1] >= 0.15) best = b0;
+      else if (cov[b0] >= 0.65 && cov[b0] - cov[b1] >= 0.2) best = b0;
+    }
+    if (best >= 0) cellbox[best].push_back({ox0, oy0, ox1, oy1, o.text});
+  }
+  // sort_and_gather_ocr_res: per cell, sort top-to-bottom/left-to-right, gather same-row.
+  std::vector<std::string> cell_text(N);
+  for (int j = 0; j < N; ++j) {
+    auto& boxes = cellbox[j];
+    if (boxes.empty()) continue;
+    std::stable_sort(boxes.begin(), boxes.end(), [](const OcrBox& a, const OcrBox& b) {
+      return a.y0 < b.y0 || (a.y0 == b.y0 && a.x0 < b.x0);
+    });
+    // gather_ocr_list_by_row: merge same-row (y-contained, thr=10) with gap spaces.
+    std::vector<int> alive(boxes.size());
+    for (size_t k = 0; k < boxes.size(); ++k) alive[k] = 1;
+    for (size_t a = 0; a < boxes.size(); ++a) {
+      if (!alive[a]) continue;
+      for (size_t b = a + 1; b < boxes.size(); ++b) {
+        if (!alive[b]) continue;
+        double ha = boxes[a].y1 - boxes[a].y0, hb = boxes[b].y1 - boxes[b].y0;
+        double iy = std::min(boxes[a].y1, boxes[b].y1) - std::max(boxes[a].y0, boxes[b].y0);
+        double ra = ha > 0 ? (ha - iy) / ha : 0, rb = hb > 0 ? (hb - iy) / hb : 0;
+        if (ra < 10 || rb < 10) {  // is_single_axis_contained y, thr=10 (ratio<thr)
+          double dis = std::max(boxes[b].x0 - boxes[a].x1, 0.0);
+          boxes[a].text += std::string((int)(dis / 10), ' ') + boxes[b].text;
+          boxes[a].x0 = std::min(boxes[a].x0, boxes[b].x0);
+          boxes[a].x1 = std::max(boxes[a].x1, boxes[b].x1);
+          boxes[a].y0 = std::min(boxes[a].y0, boxes[b].y0);
+          boxes[a].y1 = std::max(boxes[a].y1, boxes[b].y1);
+          alive[b] = 0;
+        }
+      }
+    }
+    std::string t;
+    for (size_t k = 0; k < boxes.size(); ++k) if (alive[k]) t += boxes[k].text;
+    cell_text[j] = t;
+  }
+  return plot_html(st, cell_text);
+}
+
 }  // namespace mineru
