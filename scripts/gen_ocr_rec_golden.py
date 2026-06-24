@@ -56,7 +56,7 @@ crop.tofile(os.path.join(GOLDEN, "ocr_rec_input.rgb"))
 max_wh = max(cw / ch, WB / H)
 imgW = max(MINW, min(MAXW, int(H * max_wh)))
 rw = min(imgW, max(int(np.ceil(H * cw / ch)), MINW))
-resized = resize_bilinear(crop, H, rw)
+resized = resize_bilinear(crop, H, rw)[:, :, ::-1]  # RGB crop -> BGR (MinerU recognizes BGR)
 x = np.zeros((1, 3, H, imgW), np.float32)
 x[0, :, :, :rw] = (resized.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)
 

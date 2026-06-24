@@ -252,7 +252,9 @@ std::vector<DetBox> TextDetector::detect(const std::vector<uint8_t>& rgb, int w,
   rw = std::max((int)(round_half_even(rw / 32.0) * 32), 32);
 
   std::vector<uint8_t> resized = resize_bilinear_rgb8(rgb, w, h, rw, rh);
-  // NormalizeImage (order hwc): (px/255 - mean)/std, RGB; then ToCHWImage.
+  // MinerU feeds the model BGR (cv2.cvtColor(RGB, COLOR_RGB2BGR)); the ImageNet means
+  // are applied in that channel order. NormalizeImage (order hwc): (px/255 - mean)/std,
+  // then ToCHWImage. Source is RGB, so model channel c reads source channel (2 - c).
   static const float kMean[3] = {0.485f, 0.456f, 0.406f};
   static const float kStd[3] = {0.229f, 0.224f, 0.225f};
   std::vector<float> input(static_cast<size_t>(3) * rh * rw);
@@ -260,7 +262,8 @@ std::vector<DetBox> TextDetector::detect(const std::vector<uint8_t>& rgb, int w,
     for (int x = 0; x < rw; ++x)
       for (int c = 0; c < 3; ++c)
         input[(static_cast<size_t>(c) * rh + y) * rw + x] =
-            (resized[(static_cast<size_t>(y) * rw + x) * 3 + c] / 255.0f - kMean[c]) / kStd[c];
+            (resized[(static_cast<size_t>(y) * rw + x) * 3 + (2 - c)] / 255.0f - kMean[c]) /
+            kStd[c];
 
   std::array<int64_t, 4> ishape{1, 3, rh, rw};
   Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);

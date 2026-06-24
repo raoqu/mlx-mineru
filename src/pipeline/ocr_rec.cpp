@@ -59,11 +59,12 @@ RecResult TextRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int 
 
   std::vector<uint8_t> resized = resize_bilinear_rgb8(rgb, w, h, rw, kH);
   std::vector<float> input(static_cast<size_t>(3) * kH * imgW, 0.0f);  // zero-padded
+  // MinerU recognizes from BGR crops (cv2). Source is RGB -> model channel c reads (2-c).
   for (int y = 0; y < kH; ++y)
     for (int x = 0; x < rw; ++x)
       for (int c = 0; c < 3; ++c)
         input[(static_cast<size_t>(c) * kH + y) * imgW + x] =
-            resized[(static_cast<size_t>(y) * rw + x) * 3 + c] / 127.5f - 1.0f;
+            resized[(static_cast<size_t>(y) * rw + x) * 3 + (2 - c)] / 127.5f - 1.0f;
 
   std::array<int64_t, 4> ishape{1, 3, kH, imgW};
   Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);

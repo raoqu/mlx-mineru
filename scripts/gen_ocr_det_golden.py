@@ -34,8 +34,10 @@ post = DBPostProcess(thresh=0.3, box_thresh=0.6, max_candidates=1000, unclip_rat
 
 img = np.asarray(pdfium.PdfDocument(os.path.join(HERE, "a.pdf"))[0].render(scale=2).to_pil().convert("RGB"))
 src_h, src_w = img.shape[:2]
-np.ascontiguousarray(img).tofile(os.path.join(GOLDEN, "ocr_det_input.rgb"))  # for the C++ e2e test
-data = transform({"image": img.copy(), "polys": np.zeros((0, 4, 2), np.float32)}, pre_ops)
+np.ascontiguousarray(img).tofile(os.path.join(GOLDEN, "ocr_det_input.rgb"))  # RGB; C++ swaps to BGR
+# MinerU's pipeline feeds the model BGR (cv2.cvtColor(RGB, COLOR_RGB2BGR)); match it.
+bgr = img[:, :, ::-1]
+data = transform({"image": bgr.copy(), "polys": np.zeros((0, 4, 2), np.float32)}, pre_ops)
 x, shape_list = data[0][None], np.array([data[1]])
 
 sess = ort.InferenceSession(os.path.join(OCR, "ocr_det.onnx"), providers=["CPUExecutionProvider"])
