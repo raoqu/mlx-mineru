@@ -10,7 +10,7 @@
 #include <map>
 #include <stdexcept>
 
-#include "mineru/image_preprocess.hpp"  // resize_bilinear_rgb8
+#include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
 #include "onnxruntime_cxx_api.h"
 
 namespace mineru {
@@ -75,7 +75,7 @@ TableStructure TableRecognizer::recognize_structure(const std::vector<uint8_t>& 
   int rh = (int)(h * ratio), rw = (int)(w * ratio);
   rh = std::max(1, rh);
   rw = std::max(1, rw);
-  std::vector<uint8_t> resized = resize_bilinear_rgb8(rgb, w, h, rw, rh);
+  std::vector<uint8_t> resized = resize_rgb8_cv(rgb, w, h, rw, rh, kInterLinear);
 
   // NormalizeImage (BGR, like MinerU's cv2 input) into a 488x488 zero canvas, CHW.
   std::vector<float> input(static_cast<size_t>(3) * kMaxLen * kMaxLen, 0.0f);

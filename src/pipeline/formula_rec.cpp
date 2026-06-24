@@ -10,7 +10,7 @@
 #include <set>
 #include <stdexcept>
 
-#include "mineru/image_preprocess.hpp"  // resize_bilinear_rgb8
+#include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
 #include "onnxruntime_cxx_api.h"
 
 namespace mineru {
@@ -210,7 +210,7 @@ FormulaResult FormulaRecognizer::recognize(const std::vector<uint8_t>& rgb, int 
   int nh = (int)(ch * scale), nw = (int)(cw * scale);
   nh = std::max(1, nh);
   nw = std::max(1, nw);
-  std::vector<uint8_t> resized = resize_bilinear_rgb8(crop, cw, ch, nw, nh);
+  std::vector<uint8_t> resized = resize_rgb8_cv(crop, cw, ch, nw, nh, kInterLinear);
 
   int pad_w = (kTargetW - nw) / 2, pad_h = (kTargetH - nh) / 2;
   // gray-normalize directly into the padded canvas (black padding -> gray 0).

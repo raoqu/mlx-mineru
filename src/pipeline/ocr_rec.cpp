@@ -7,7 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
-#include "mineru/image_preprocess.hpp"  // resize_bilinear_rgb8
+#include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
 #include "onnxruntime_cxx_api.h"
 
 namespace mineru {
@@ -60,7 +60,7 @@ RecResult TextRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int 
   int ratio_imgH = std::max((int)std::ceil(kH * ratio), kMinW);
   int rw = std::min(imgW, ratio_imgH);
 
-  std::vector<uint8_t> resized = resize_bilinear_rgb8(rgb, w, h, rw, kH);
+  std::vector<uint8_t> resized = resize_rgb8_cv(rgb, w, h, rw, kH, kInterLinear);
   std::vector<float> input(static_cast<size_t>(3) * kH * imgW, 0.0f);  // zero-padded
   // MinerU recognizes from BGR crops (cv2). Source is RGB -> model channel c reads (2-c).
   for (int y = 0; y < kH; ++y)

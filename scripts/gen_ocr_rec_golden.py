@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Golden for the C++ TextRecognizer: render a.pdf p0, crop a layout 'text' box,
-run ocr_rec.onnx with a numpy half-pixel bilinear (matches C++ resize_bilinear_rgb8)
+run ocr_rec.onnx with the real cv2.resize (matches the C++ cv resize)
 + the exact CTC greedy decode. Saves the crop RGB + expected text/score.
 """
 import json
@@ -56,7 +56,8 @@ crop.tofile(os.path.join(GOLDEN, "ocr_rec_input.rgb"))
 max_wh = max(cw / ch, WB / H)
 imgW = max(MINW, min(MAXW, int(H * max_wh)))
 rw = min(imgW, max(int(np.ceil(H * cw / ch)), MINW))
-resized = resize_bilinear(crop, H, rw)[:, :, ::-1]  # RGB crop -> BGR (MinerU recognizes BGR)
+import cv2 as _cv
+resized = _cv.resize(crop, (rw, H))[:, :, ::-1]  # cv2.resize (real); RGB crop -> BGR
 x = np.zeros((1, 3, H, imgW), np.float32)
 x[0, :, :, :rw] = (resized.astype(np.float32) / 127.5 - 1.0).transpose(2, 0, 1)
 

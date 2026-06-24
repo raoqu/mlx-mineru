@@ -208,7 +208,7 @@ target_link_libraries(mineru_vlm PUBLIC thirdparty_headers)
 
 # ---- Pipeline backend library (defined early so the CLI can link it) --------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp src/pipeline/wired_table.cpp)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp src/pipeline/wired_table.cpp src/pipeline/cv_resize.cpp)
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm mineru_core thirdparty_headers)
   if(HAVE_OPENCV)
