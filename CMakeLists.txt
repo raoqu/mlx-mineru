@@ -242,7 +242,7 @@ endif()
 
 # ---- Pipeline backend (ONNX Runtime models) ---------------------------------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp)
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm thirdparty_headers)
 
@@ -297,5 +297,18 @@ if(HAVE_ORT)
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt)
+  endif()
+
+  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/mfr.json AND
+     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_encoder.onnx AND
+     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_decoder.onnx)
+    add_executable(test_mfr tests/test_mfr.cpp)
+    target_include_directories(test_mfr PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_mfr PRIVATE mineru_pipeline)
+    set_target_properties(test_mfr PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
+    add_test(NAME mfr COMMAND test_mfr ${CMAKE_SOURCE_DIR}/tests/golden
+              ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_encoder.onnx
+              ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_decoder.onnx
+              ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_vocab.txt)
   endif()
 endif()

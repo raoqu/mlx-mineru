@@ -101,6 +101,17 @@ largest remaining task; it advances phase by phase with golden verification.
   that sub-pixel delta shifts a det box ~1px which re-buckets one crop's rec batch.
 - **Next OCR (C++)**: integrate per-region OCR into the pipeline assembly (P5); the chain
   is ready to run on layout text/title regions.
+- **P4 formula (MFR) ✅**: UniMERNet (UnimerSwin encoder + UnimerMBart decoder) exported
+  to two ONNX graphs (`scripts/export_mfr_onnx.py`): `mfr_encoder.onnx`
+  (pixel[1,3,192,672]→hidden[1,126,768]) + `mfr_decoder.onnx` (no KV cache: input_ids +
+  hidden→logits, recompute each step — formulas are short). `take_along_dim→gather`
+  patch for opset-17. Greedy decode bit-exact vs torch (86/86 ids incl EOS). `FormulaRecognizer`
+  (`src/pipeline/formula_rec.cpp`): UniMERNet preprocess (crop-margin via min-max+<200
+  threshold bbox, aspect resize, center pad, cv2 RGB2GRAY + `(g-0.7931·255)/(0.1738·255)`)
+  + encoder + greedy loop + byte-level BPE decode (GPT-2 byte map + vocab, no merges needed
+  for decode — matches HF `decode(skip_special_tokens)` exactly). `ctest mfr`: model path
+  (pixel→ids/latex) **exact**, end-to-end (raw crop→latex) **also exact** on a rendered
+  formula. Models gitignored; goldens (pixel, ids, latex, input) committed.
 - **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
-  layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
-  assembly (P5).
+  layout heuristic-filter layer + reading order; then assembly (P5) that ties layout +
+  OCR + formula + table into middle_json -> union_make.
