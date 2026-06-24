@@ -17,6 +17,7 @@ struct LayoutBox {
   int cls_id;
   std::string label;
   float score;
+  int index = 0;  // 1-based reading order (PP-DocLayoutV2 reading-order head)
 };
 
 class LayoutDetector {

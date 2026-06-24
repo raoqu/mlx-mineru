@@ -66,14 +66,31 @@ std::vector<LayoutBox> LayoutDetector::detect_800(const std::vector<uint8_t>& rg
   Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
   Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), ishape.data(), 4);
   const char* in_names[] = {"pixel_values"};
-  const char* out_names[] = {"logits", "pred_boxes"};
+  const char* out_names[] = {"logits", "pred_boxes", "order_logits"};
   auto outs =
-      const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 2);
+      const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 3);
 
   const float* logits = outs[0].GetTensorData<float>();      // (1,300,ncl)
   const float* boxes = outs[1].GetTensorData<float>();       // (1,300,4) cx,cy,w,h
+  const float* order_logits = outs[2].GetTensorData<float>();  // (1,Q,Q)
   auto lshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
   int nq = static_cast<int>(lshape[1]), ncl = static_cast<int>(lshape[2]);
+
+  // Reading-order head decode (_get_order_seqs): per-query vote = sum_{i<q} sig(ol[i,q]) +
+  // sum_{a>q} (1 - sig(ol[q,a])); argsort(votes) -> pointers; seq[pointer]=rank.
+  auto sig = [](float v) { return 1.0f / (1.0f + std::exp(-v)); };
+  std::vector<double> votes(nq, 0.0);
+  for (int q = 0; q < nq; ++q) {
+    double v = 0;
+    for (int i = 0; i < q; ++i) v += sig(order_logits[(size_t)i * nq + q]);
+    for (int a = q + 1; a < nq; ++a) v += 1.0 - sig(order_logits[(size_t)q * nq + a]);
+    votes[q] = v;
+  }
+  std::vector<int> ptr(nq);
+  std::iota(ptr.begin(), ptr.end(), 0);
+  std::stable_sort(ptr.begin(), ptr.end(), [&](int a, int b) { return votes[a] < votes[b]; });
+  std::vector<int> order_seq(nq);
+  for (int r = 0; r < nq; ++r) order_seq[ptr[r]] = r;
 
   // Box decode (cx,cy,w,h -> corners) scaled to target.
   std::vector<std::array<float, 4>> corners(nq);
@@ -91,7 +108,7 @@ std::vector<LayoutBox> LayoutDetector::detect_800(const std::vector<uint8_t>& rg
                    [&](int a, int b) { return scores[a] > scores[b]; });
 
   auto clip = [](int v, int hi) { return std::max(0, std::min(hi, v)); };
-  std::vector<LayoutBox> res;
+  std::vector<std::pair<int, LayoutBox>> kept;  // (order_seq, box)
   for (int k = 0; k < nq; ++k) {
     int fi = order[k];
     float s = scores[fi];
@@ -104,7 +121,16 @@ std::vector<LayoutBox> LayoutDetector::detect_800(const std::vector<uint8_t>& rg
     b.score = s;
     b.bbox = {clip((int)std::floor(c[0]), target_w), clip((int)std::floor(c[1]), target_h),
               clip((int)std::ceil(c[2]), target_w), clip((int)std::ceil(c[3]), target_h)};
-    res.push_back(std::move(b));
+    kept.emplace_back(order_seq[q], std::move(b));
+  }
+  // Sort by reading-order, assign 1-based index.
+  std::stable_sort(kept.begin(), kept.end(),
+                   [](const auto& a, const auto& b) { return a.first < b.first; });
+  std::vector<LayoutBox> res;
+  res.reserve(kept.size());
+  for (int i = 0; i < (int)kept.size(); ++i) {
+    kept[i].second.index = i + 1;
+    res.push_back(std::move(kept[i].second));
   }
   return res;
 }

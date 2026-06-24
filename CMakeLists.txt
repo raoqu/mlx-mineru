@@ -263,6 +263,15 @@ if(HAVE_ORT)
     add_test(NAME layout_det
       COMMAND test_layout_det ${CMAKE_SOURCE_DIR}/models/pipeline/Layout
               ${CMAKE_SOURCE_DIR}/tests/golden)
+
+    if(HAVE_PDFIUM AND EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/pipeline_p0_model.json)
+      add_executable(test_layout_order tests/test_layout_order.cpp)
+      target_include_directories(test_layout_order PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+      target_link_libraries(test_layout_order PRIVATE mineru_pipeline mineru_pdf)
+      set_target_properties(test_layout_order PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
+      add_test(NAME layout_order COMMAND test_layout_order ${CMAKE_SOURCE_DIR}/models/pipeline/Layout
+                ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/a.pdf)
+    endif()
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/TabCls/PP-LCNet_x1_0_table_cls.onnx)

@@ -167,6 +167,13 @@ largest remaining task; it advances phase by phase with golden verification.
   numbered lists, paragraphs across pages — **ASCII-exact vs union_make on MinerU's golden**.
   Remaining for a from-scratch CLI: generate the model_list in C++ (layout detector +
   reading-order head + OCR det) instead of consuming MinerU's; then the non-text paths.
+- **P5 layout reading-order ✅**: `LayoutDetector` now decodes PP-DocLayoutV2's reading-order
+  head (`order_logits` → `_get_order_seqs`: per-query vote = Σ_{i<q} σ(ol[i,q]) + Σ_{a>q}
+  (1−σ(ol[q,a])), argsort → rank), sorts kept boxes by reading order, and assigns 1-based
+  `index`. `ctest layout_order` renders a.pdf p0 at 200dpi and reproduces MinerU's model_list
+  region dets — **10/10 labels in correct reading order, boxes within 3px** (bicubic-resize
+  variance). With this, C++ can produce the region half of the model_list; combining with the
+  OCR-det `ocr_text` boxes yields a full from-scratch model_list (no MinerU dependency).
 - **Also queued**: UNet wired-table structure; digital-PDF text extraction (pdftext) for
   text-layer PDFs; visual-span path (image/table/formula) in the assembly; para_split
   cross-block merging for multi-block paragraphs.

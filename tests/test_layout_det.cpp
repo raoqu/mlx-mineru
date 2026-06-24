@@ -2,9 +2,11 @@
 // Pipeline P1: C++ PP-DocLayoutV2 detector == Python core post-process golden
 // (scripts/gen_pp_layout_golden.py). Both consume the same saved 800x800 RGB, so
 // this verifies onnx inference + box decode/scale/topk/conf/clip exactly.
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <vector>
 
 #include "mineru/layout_det.hpp"
 #include "nlohmann/json.hpp"
@@ -31,7 +33,15 @@ int main(int argc, char** argv) {
   mineru::LayoutDetector det = mineru::LayoutDetector::load(model_dir, g["conf"].get<float>());
   auto got = det.detect_800(rgb, size, size);
 
-  const auto& want = g["detections"];
+  // detect_800 now returns boxes in reading order; the core-post-process golden is in score
+  // order. Compare as a set: sort both by bbox top-left.
+  std::sort(got.begin(), got.end(), [](const mineru::LayoutBox& a, const mineru::LayoutBox& b) {
+    return a.bbox[1] != b.bbox[1] ? a.bbox[1] < b.bbox[1] : a.bbox[0] < b.bbox[0];
+  });
+  std::vector<json> want(g["detections"].begin(), g["detections"].end());
+  std::sort(want.begin(), want.end(), [](const json& a, const json& b) {
+    return a["bbox"][1] != b["bbox"][1] ? a["bbox"][1] < b["bbox"][1] : a["bbox"][0] < b["bbox"][0];
+  });
   CHECK_MSG(got.size() == want.size(),
             "count " + std::to_string(got.size()) + " != " + std::to_string(want.size()));
   size_t n = std::min(got.size(), want.size());
