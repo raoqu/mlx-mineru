@@ -260,7 +260,9 @@ if(HAVE_MLX)
 
   # ---- mlx-mineru CLI -------------------------------------------------------
   if(HAVE_PDFIUM)
-    add_executable(mlx-mineru src/cli/main.cpp)
+    # Embed the built web UI (web/dist) into a generated source (stub if absent).
+    execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/embed_web.py)
+    add_executable(mlx-mineru src/cli/main.cpp src/cli/web_assets.gen.cpp)
     target_link_libraries(mlx-mineru PRIVATE mineru_qwen mineru_vlm mineru_pdf mineru_core)
     set(MLX_MINERU_RPATH "${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
     if(HAVE_ORT)

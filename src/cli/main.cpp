@@ -11,9 +11,11 @@
 #include <iostream>
 #include <string>
 
+#include <functional>
 #include <mutex>
 
 #include "CLI11/CLI11.hpp"
+#include "mineru/web_assets.hpp"
 #include "httplib/httplib.h"
 #include "mineru/enums.hpp"
 #include "mineru/image_preprocess.hpp"
@@ -353,21 +355,34 @@ static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qw
   return convert_batched(model, tok, pages, idxs, /*images_dir=*/"", /*batch_size=*/6);
 }
 
-// Minimal HTTP API (aligns loosely with cli/fast_api.py): GET /health,
-// POST /file_parse (raw PDF body or multipart "files") -> {md, content_list}.
-static int run_server(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
-                      const std::string& host, int port) {
+// PDF bytes (+ max page count) -> {md_content, content_list}. Backend-agnostic.
+using ConvertFn = std::function<json(const std::vector<uint8_t>&, int)>;
+
+// HTTP API + (optional) embedded web UI. GET /health, GET /info, POST /file_parse
+// (raw PDF body or multipart "files"; optional form fields max_pages/backend);
+// when serve_ui, every other GET is served from the embedded web/dist bundle.
+static int run_web_server(const ConvertFn& convert, const std::string& backend_name,
+                          const std::string& host, int port, bool serve_ui) {
   httplib::Server srv;
   static std::mutex infer_mtx;  // serialize model use across requests
 
   srv.Get("/health", [](const httplib::Request&, httplib::Response& res) {
     res.set_content("{\"status\":\"ok\"}", "application/json");
   });
+  srv.Get("/info", [&](const httplib::Request&, httplib::Response& res) {
+    json j = {{"backend", backend_name}, {"version", mineru::kMineruVersion},
+              {"ui", serve_ui && mineru::web_assets_bundled()}};
+    res.set_content(j.dump(), "application/json");
+  });
 
   srv.Post("/file_parse", [&](const httplib::Request& req, httplib::Response& res) {
     std::string pdf;
-    if (req.is_multipart_form_data() && req.form.has_file("files")) {
-      pdf = req.form.get_file("files").content;
+    int max_pages = -1;
+    if (req.is_multipart_form_data()) {
+      if (req.form.has_file("files")) pdf = req.form.get_file("files").content;
+      if (req.form.has_field("max_pages")) {
+        try { max_pages = std::stoi(req.form.get_field("max_pages")); } catch (...) {}
+      }
     } else {
       pdf = req.body;
     }
@@ -379,11 +394,7 @@ static int run_server(const mineru::Qwen2VLModel& model, const mineru::Qwen2Toke
     try {
       std::lock_guard<std::mutex> lock(infer_mtx);
       std::vector<uint8_t> bytes(pdf.begin(), pdf.end());
-      mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
-      json pdf_info = convert_document(model, tok, doc, 0, -1);
-      std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
-      json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
-      json out = {{"md_content", md}, {"content_list", content_list}};
+      json out = convert(bytes, max_pages);
       res.set_content(out.dump(), "application/json");
     } catch (const std::exception& ex) {
       res.status = 500;
@@ -391,8 +402,20 @@ static int run_server(const mineru::Qwen2VLModel& model, const mineru::Qwen2Toke
     }
   });
 
-  std::cerr << "[mlx-mineru] serving on http://" << host << ":" << port
-            << "  (GET /health, POST /file_parse)\n";
+  if (serve_ui) {
+    if (!mineru::web_assets_bundled())
+      std::cerr << "[mlx-mineru] WARN: web UI not bundled (run `pnpm -C web build` + rebuild). "
+                   "Serving API only.\n";
+    srv.Get(R"(/.*)", [](const httplib::Request& req, httplib::Response& res) {
+      const mineru::WebAsset* a = mineru::web_asset(req.path);
+      if (!a) a = mineru::web_asset("/index.html");  // SPA fallback
+      if (!a) { res.status = 404; res.set_content("web UI not bundled", "text/plain"); return; }
+      res.set_content(reinterpret_cast<const char*>(a->data), a->size, a->mime);
+    });
+  }
+
+  std::cerr << "[mlx-mineru] " << (serve_ui ? "web UI" : "API") << " on http://" << host << ":"
+            << port << "  (backend: " << backend_name << ")\n";
   if (!srv.listen(host, port)) {
     std::cerr << "[mlx-mineru] failed to bind " << host << ":" << port << "\n";
     return 1;
@@ -401,8 +424,63 @@ static int run_server(const mineru::Qwen2VLModel& model, const mineru::Qwen2Toke
 }
 
 #ifdef MINERU_HAVE_PIPELINE
-// Native pipeline backend: render -> layout(+reading order) + OCR det -> model_list ->
-// assemble + post-OCR text-fill -> union_make. No VLM model needed.
+// Pre-loaded native pipeline models (layout + OCR + optional formula/table).
+struct PipelineModels {
+  std::unique_ptr<mineru::LayoutDetector> layout;
+  std::unique_ptr<mineru::TextDetector> det;
+  std::unique_ptr<mineru::TextRecognizer> rec;
+  std::unique_ptr<mineru::FormulaRecognizer> mfr;
+  std::unique_ptr<mineru::OcrPipeline> table_ocr;
+  std::unique_ptr<mineru::TableRecognizer> table_rec;
+};
+
+static PipelineModels load_pipeline_models(const std::string& models) {
+  namespace fsx = std::filesystem;
+  PipelineModels pm;
+  pm.layout = std::make_unique<mineru::LayoutDetector>(mineru::LayoutDetector::load(models + "/Layout"));
+  pm.det = std::make_unique<mineru::TextDetector>(mineru::TextDetector::load(models + "/OCR/ocr_det.onnx"));
+  pm.rec = std::make_unique<mineru::TextRecognizer>(
+      mineru::TextRecognizer::load(models + "/OCR/ocr_rec.onnx", models + "/OCR/ppocrv6_dict.txt"));
+  if (fsx::exists(models + "/MFR/mfr_encoder.onnx")) {
+    pm.mfr = std::make_unique<mineru::FormulaRecognizer>(mineru::FormulaRecognizer::load(
+        models + "/MFR/mfr_encoder.onnx", models + "/MFR/mfr_decoder.onnx", models + "/MFR/mfr_vocab.txt"));
+    std::cerr << "[mlx-mineru] formula recognizer loaded\n";
+  }
+  std::string slanet = models + "/TabRec/SlanetPlus/slanet-plus.onnx";
+  if (fsx::exists(slanet)) {
+    pm.table_ocr = std::make_unique<mineru::OcrPipeline>(mineru::OcrPipeline::load(
+        models + "/OCR/ocr_det.onnx", models + "/OCR/ocr_rec.onnx", models + "/OCR/ppocrv6_dict.txt"));
+    pm.table_rec = std::make_unique<mineru::TableRecognizer>(mineru::TableRecognizer::load(
+        slanet, models + "/TabRec/SlanetPlus/table_structure_dict.txt"));
+    std::cerr << "[mlx-mineru] table recognizer loaded (wireless/SLANet+)\n";
+  }
+  return pm;
+}
+
+// Convert pages [s..e] of a document to middle_json pdf_info using pre-loaded models.
+static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& doc, int dpi,
+                                     int s, int e) {
+  json model_list = json::array();
+  std::vector<mineru::PipelinePageImage> pages;
+  for (int p = s; p <= e; ++p) {
+    mineru::PageImage im = doc.render_page(p, dpi);
+    model_list.push_back(mineru::build_page_model(*pm.layout, *pm.det, im.rgb, im.width, im.height,
+                                                  pm.mfr.get(), pm.table_ocr.get(), pm.table_rec.get()));
+    mineru::PipelinePageImage pg;
+    pg.page_w = (int)std::lround(im.width_pt);
+    pg.page_h = (int)std::lround(im.height_pt);
+    pg.w = im.width;
+    pg.h = im.height;
+    pg.rgb = std::move(im.rgb);
+    for (const mineru::PdfChar& c : doc.extract_chars(p))  // digital text layer if present
+      pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
+    pages.push_back(std::move(pg));
+  }
+  return mineru::pipeline_assemble_pages(model_list, pages, *pm.rec);
+}
+
+// Native pipeline backend (one-shot): render -> layout + OCR det -> model_list ->
+// assemble + text-fill -> union_make -> write files. No VLM model needed.
 static int run_pipeline(const std::string& pdf_path, const std::string& models,
                         const std::string& out_dir, int start_page, int end_page, int dpi) {
   namespace fs = std::filesystem;
@@ -412,58 +490,11 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
   std::cerr << "[mlx-mineru] pipeline backend: " << pdf_path << " pages " << s << ".." << e
             << " of " << npages << "\n";
-
   auto t0 = Clock::now();
-  mineru::LayoutDetector layout = mineru::LayoutDetector::load(models + "/Layout");
-  mineru::TextDetector det = mineru::TextDetector::load(models + "/OCR/ocr_det.onnx");
-  mineru::TextRecognizer rec =
-      mineru::TextRecognizer::load(models + "/OCR/ocr_rec.onnx", models + "/OCR/ppocrv6_dict.txt");
-  // Formula recognition is optional (large model); load it if present.
-  namespace fsx = std::filesystem;
-  std::unique_ptr<mineru::FormulaRecognizer> mfr;
-  if (fsx::exists(models + "/MFR/mfr_encoder.onnx")) {
-    mfr = std::make_unique<mineru::FormulaRecognizer>(mineru::FormulaRecognizer::load(
-        models + "/MFR/mfr_encoder.onnx", models + "/MFR/mfr_decoder.onnx",
-        models + "/MFR/mfr_vocab.txt"));
-    std::cerr << "[mlx-mineru] formula recognizer loaded\n";
-  }
-  // Table recognition is optional (needs a per-crop OCR pipeline + SLANet+).
-  std::unique_ptr<mineru::OcrPipeline> table_ocr;
-  std::unique_ptr<mineru::TableRecognizer> table_rec;
-  std::string slanet = models + "/TabRec/SlanetPlus/slanet-plus.onnx";
-  if (fsx::exists(slanet)) {
-    table_ocr = std::make_unique<mineru::OcrPipeline>(mineru::OcrPipeline::load(
-        models + "/OCR/ocr_det.onnx", models + "/OCR/ocr_rec.onnx",
-        models + "/OCR/ppocrv6_dict.txt"));
-    table_rec = std::make_unique<mineru::TableRecognizer>(mineru::TableRecognizer::load(
-        slanet, models + "/TabRec/SlanetPlus/table_structure_dict.txt"));
-    std::cerr << "[mlx-mineru] table recognizer loaded (wireless/SLANet+)\n";
-  }
+  PipelineModels pm = load_pipeline_models(models);
   std::cerr << "[mlx-mineru] pipeline models loaded in " << secs(t0, Clock::now()) << "s\n";
-
   auto t_inf = Clock::now();
-  json model_list = json::array();
-  std::vector<mineru::PipelinePageImage> pages;
-  for (int p = s; p <= e; ++p) {
-    mineru::PageImage im = doc.render_page(p, dpi);
-    model_list.push_back(mineru::build_page_model(layout, det, im.rgb, im.width, im.height,
-                                                  mfr.get(), table_ocr.get(), table_rec.get()));
-    mineru::PipelinePageImage pg;
-    pg.page_w = (int)std::lround(im.width_pt);
-    pg.page_h = (int)std::lround(im.height_pt);
-    pg.w = im.width;
-    pg.h = im.height;
-    pg.rgb = std::move(im.rgb);
-    // Digital PDF: use the embedded text layer (faster + exact) instead of OCR.
-    for (const mineru::PdfChar& c : doc.extract_chars(p))
-      pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
-    bool digital = !pg.chars.empty();
-    pages.push_back(std::move(pg));
-    std::cerr << "[mlx-mineru] page " << p << ": "
-              << model_list.back()["layout_dets"].size() << " dets, "
-              << (digital ? "digital text" : "OCR") << "\n";
-  }
-  json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, rec);
+  json pdf_info = pipeline_doc_to_pdf_info(pm, doc, dpi, s, e);
 
   std::string stem = fs::path(pdf_path).stem().string();
   fs::path dir = fs::path(out_dir) / stem / "pipeline";
@@ -491,7 +522,7 @@ int main(int argc, char** argv) {
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
   std::string host = "127.0.0.1", backend = "vlm", pipeline_models = "models/pipeline";
   int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6, pipeline_dpi = 200;
-  bool layout_only = false, server = false, no_image_rec = false;
+  bool layout_only = false, server = false, no_image_rec = false, web = false;
   app.add_option("-b,--backend", backend, "Backend: vlm (default) | pipeline (native ONNX CV)");
   app.add_option("--pipeline-models", pipeline_models,
                  "Pipeline backend model dir (default models/pipeline)");
@@ -504,6 +535,7 @@ int main(int argc, char** argv) {
   app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON (block types + bboxes), no content recognition");
   app.add_flag("--no-image-rec", no_image_rec, "VLM backend: skip image/chart understanding (still saves the cropped image), much faster");
   app.add_flag("--server", server, "Run the HTTP API server instead of a one-shot conversion");
+  app.add_flag("--web", web, "Run the web UI + API server (embedded frontend at http://host:port)");
   app.add_option("--host", host, "Server bind host (default 127.0.0.1)");
   app.add_option("--port", port, "Server port (default 8000)");
   app.add_option("--bits", bits, "Weight quantization bits: 4 (default) / 8 / 0 (full bf16)");
@@ -512,6 +544,19 @@ int main(int argc, char** argv) {
 
   if (backend == "pipeline") {
 #ifdef MINERU_HAVE_PIPELINE
+    if (web || server) {
+      PipelineModels pm = load_pipeline_models(pipeline_models);
+      ConvertFn convert = [&](const std::vector<uint8_t>& bytes, int max_pages) -> json {
+        mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
+        int np = doc.page_count();
+        int e = (max_pages > 0) ? std::min(np, max_pages) - 1 : np - 1;
+        json pdf_info = pipeline_doc_to_pdf_info(pm, doc, pipeline_dpi, 0, e);
+        std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+        json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+        return json{{"md_content", md}, {"content_list", cl}};
+      };
+      return run_web_server(convert, "pipeline", host, port, web);
+    }
     if (pdf_path.empty()) { std::cerr << "--path is required for the pipeline backend\n"; return 2; }
     return run_pipeline(pdf_path, pipeline_models, out_dir, start_page, end_page, pipeline_dpi);
 #else
@@ -534,7 +579,18 @@ int main(int argc, char** argv) {
   std::cerr << "[mlx-mineru] model loaded in "
             << std::chrono::duration<double>(t_loaded - t0).count() << "s\n";
 
-  if (server) return run_server(model, tok, host, port);
+  if (web || server) {
+    ConvertFn convert = [&](const std::vector<uint8_t>& bytes, int max_pages) -> json {
+      mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
+      int np = doc.page_count();
+      int e = (max_pages > 0) ? std::min(np, max_pages) - 1 : -1;
+      json pdf_info = convert_document(model, tok, doc, 0, e);
+      std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+      json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+      return json{{"md_content", md}, {"content_list", cl}};
+    };
+    return run_web_server(convert, "vlm", host, port, web);
+  }
 
   if (pdf_path.empty()) { std::cerr << "--path is required (or use --server)\n"; return 2; }
   mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);

@@ -101,7 +101,8 @@ mlx-mineru -p <file.pdf> [options]
 | `-o, --output <dir>` | `output` | Output directory |
 | `--layout-only` | off | Only run layout detection → `<stem>_layout.json` (block types + bboxes per page); no content recognition |
 | `--no-image-rec` | off | VLM backend: skip image/chart *understanding* (still crops + saves the image, emits `![](…)`); much faster when pages have figures/charts |
-| `--server` | off | Run the HTTP API server instead of converting |
+| `--server` | off | Run the HTTP API server (JSON only) instead of converting |
+| `--web` | off | Run the **web UI + API** (embedded frontend at `http://host:port`) |
 | `--host <h>` | `127.0.0.1` | Server bind host |
 | `--port <p>` | `8000` | Server port |
 | `--bits <n>` | `4` | LLM weight quantization: `4` / `8` / `0` (full bf16). 4-bit ≈ 10–25% faster generation and ~4× smaller LLM weights, byte-identical greedy output in practice. Use `0` for exact bf16 parity. |
@@ -149,11 +150,37 @@ seconds (KV-cached generation).
 
 ---
 
-## 5. HTTP API (`--server`)
+## 5. Web UI (`--web`) and HTTP API (`--server`)
+
+The CLI bundles a **Vite + Vue** frontend (a MinerU-style demo page) compiled into the
+binary. `--web` serves that UI **and** the API; `--server` serves the API only. Both work
+with either backend (`--backend vlm|pipeline`):
 
 ```bash
+# Web UI + API (pipeline backend loads in ~1s; VLM loads the 2.3GB model)
+./build/mlx-mineru --web --backend pipeline --port 8000
+# open http://127.0.0.1:8000  -> drag a PDF, click 转换, see Markdown / JSON
+
+# API only
 ./build/mlx-mineru --server --host 127.0.0.1 --port 8000
-# loads the model once, then serves requests (serialized through the model).
+```
+
+### Frontend dev (`./dev.sh`)
+Runs the C++ backend (`--server`) and the Vite dev server together; Vite proxies the API
+to the backend, so UI edits hot-reload against the real engine:
+```bash
+./dev.sh                  # backend: pipeline (fast)
+./dev.sh --backend vlm    # backend: VLM
+# open http://localhost:5173
+```
+`./build.sh` builds the frontend (`pnpm install && pnpm build`), embeds `web/dist` into the
+binary (`scripts/embed_web.py` → `src/cli/web_assets.gen.cpp`), then compiles — so the
+shipped `mlx-mineru` needs no external web files.
+
+### `GET /info`
+```bash
+curl http://127.0.0.1:8000/info
+# {"backend":"pipeline","ui":true,"version":"3.4.0"}
 ```
 
 ### `GET /health`

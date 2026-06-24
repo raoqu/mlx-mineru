@@ -35,6 +35,16 @@ if [ "$FETCH_WEIGHTS" = "1" ]; then
   ./scripts/fetch_weights.sh
 fi
 
+# --- web UI: build the frontend (pnpm + vite) and embed it into the binary ---
+# Skipped gracefully if pnpm is unavailable (binary still builds; --web serves API only).
+if command -v pnpm >/dev/null 2>&1; then
+  echo "[build] web UI: pnpm install + vite build ..."
+  ( cd web && pnpm install && pnpm build ) || echo "WARN: web build failed; --web will serve API only"
+else
+  echo "WARN: pnpm not found; skipping web UI build (--web will serve API only)"
+fi
+python3 ./scripts/embed_web.py || echo "WARN: embed_web.py failed"
+
 # --- configure + build ---
 JOBS="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
