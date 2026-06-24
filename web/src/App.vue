@@ -6,8 +6,10 @@ import katex from 'katex'
 const file = ref(null)
 const fileName = ref('')
 const dragOver = ref(false)
+// Source-aligned backends; the server reports which are actually available.
+const ALL_BACKENDS = ['hybrid-engine', 'pipeline', 'vlm']
 const backend = ref('hybrid-engine')
-const backends = ref(['hybrid-engine'])
+const backends = ref(ALL_BACKENDS)
 const maxPages = ref(1000)
 const showAdvanced = ref(false)
 const converting = ref(false)
@@ -27,11 +29,18 @@ onMounted(async () => {
     const r = await fetch('/info')
     if (r.ok) {
       const j = await r.json()
-      if (j.backend) { backends.value = [j.backend]; backend.value = j.backend }
-      serverInfo.value = `${j.backend || ''} ${j.version || ''}`.trim()
+      if (Array.isArray(j.backends) && j.backends.length) backends.value = j.backends
+      if (j.default) backend.value = j.default
+      else if (!backends.value.includes(backend.value)) backend.value = backends.value[0]
+      serverInfo.value = `${j.version || ''}`.trim()
     }
   } catch (_) { /* dev: backend may not be up yet */ }
 })
+const backendHint = computed(() => ({
+  'hybrid-engine': '原生流水线 + VLM 图表理解（混合）',
+  'pipeline': '原生 ONNX 流水线（版面/OCR/公式/表格，最快）',
+  'vlm': 'Qwen2-VL 视觉大模型（整页理解，含图像）',
+}[backend.value] || '本地原生解析引擎'))
 
 function onPick(e) { setFile(e.target.files?.[0]) }
 function onDrop(e) { dragOver.value = false; setFile(e.dataTransfer.files?.[0]) }
@@ -126,7 +135,7 @@ function copy(text) { navigator.clipboard?.writeText(text) }
 
         <div class="field">
           <div class="label">解析后端</div>
-          <div class="muted small">本地原生解析引擎</div>
+          <div class="muted small">{{ backendHint }}</div>
           <select v-model="backend">
             <option v-for="b in backends" :key="b" :value="b">{{ b }}</option>
           </select>

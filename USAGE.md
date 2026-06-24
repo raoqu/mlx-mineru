@@ -153,16 +153,28 @@ seconds (KV-cached generation).
 ## 5. Web UI (`--web`) and HTTP API (`--server`)
 
 The CLI bundles a **Vite + Vue** frontend (a MinerU-style demo page) compiled into the
-binary. `--web` serves that UI **and** the API; `--server` serves the API only. Both work
-with either backend (`--backend vlm|pipeline`):
+binary. `--web` serves that UI **and** the API; `--server` serves the API only. The backend
+is chosen **per request** (the 解析后端 dropdown / the `backend` form field) — no
+`--backend` binding needed. The three source-aligned backends:
+
+| 解析后端 | what runs |
+|---|---|
+| `hybrid-engine` (default) | native pipeline structure **+** VLM image/chart understanding |
+| `pipeline` | native ONNX pipeline (layout/OCR/formula/table) — fastest |
+| `vlm` | Qwen2-VL — whole-page understanding incl. images |
+
+Backends are **lazy-loaded** on first use (pipeline ~1s; VLM loads the 2.3 GB model the
+first time `vlm`/`hybrid-engine` is requested).
 
 ```bash
-# Web UI + API (pipeline backend loads in ~1s; VLM loads the 2.3GB model)
-./build/mlx-mineru --web --backend pipeline --port 8000
-# open http://127.0.0.1:8000  -> drag a PDF, click 转换, see Markdown / JSON
+# Web UI + API
+./build/mlx-mineru --web --port 8000
+# open http://127.0.0.1:8000  -> drag a PDF, pick 解析后端, click 转换
 
 # API only
 ./build/mlx-mineru --server --host 127.0.0.1 --port 8000
+# choose backend per request:
+curl -F files=@paper.pdf -F backend=pipeline http://127.0.0.1:8000/file_parse
 ```
 
 ### Frontend dev (`./dev.sh`)
@@ -180,8 +192,10 @@ shipped `mlx-mineru` needs no external web files.
 ### `GET /info`
 ```bash
 curl http://127.0.0.1:8000/info
-# {"backend":"pipeline","ui":true,"version":"3.4.0"}
+# {"backends":["hybrid-engine","pipeline","vlm"],"default":"hybrid-engine","ui":true,"version":"3.4.0"}
 ```
+`POST /file_parse` accepts an optional `backend` field (one of the above); defaults to the
+server's `default`.
 
 ### `GET /health`
 

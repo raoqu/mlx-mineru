@@ -355,14 +355,16 @@ static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qw
   return convert_batched(model, tok, pages, idxs, /*images_dir=*/"", /*batch_size=*/6);
 }
 
-// PDF bytes (+ max page count) -> {md_content, content_list}. Backend-agnostic.
-using ConvertFn = std::function<json(const std::vector<uint8_t>&, int)>;
+// PDF bytes + max page count + chosen backend -> {md_content, content_list}. The dispatch
+// picks/lazy-loads the backend at request time (so --web isn't bound to one --backend).
+using ConvertFn = std::function<json(const std::vector<uint8_t>&, int, const std::string&)>;
 
 // HTTP API + (optional) embedded web UI. GET /health, GET /info, POST /file_parse
 // (raw PDF body or multipart "files"; optional form fields max_pages/backend);
 // when serve_ui, every other GET is served from the embedded web/dist bundle.
-static int run_web_server(const ConvertFn& convert, const std::string& backend_name,
-                          const std::string& host, int port, bool serve_ui) {
+static int run_web_server(const ConvertFn& convert, const std::vector<std::string>& backends,
+                          const std::string& default_backend, const std::string& host, int port,
+                          bool serve_ui) {
   httplib::Server srv;
   static std::mutex infer_mtx;  // serialize model use across requests
 
@@ -370,31 +372,38 @@ static int run_web_server(const ConvertFn& convert, const std::string& backend_n
     res.set_content("{\"status\":\"ok\"}", "application/json");
   });
   srv.Get("/info", [&](const httplib::Request&, httplib::Response& res) {
-    json j = {{"backend", backend_name}, {"version", mineru::kMineruVersion},
-              {"ui", serve_ui && mineru::web_assets_bundled()}};
+    json j = {{"backends", backends}, {"default", default_backend},
+              {"version", mineru::kMineruVersion}, {"ui", serve_ui && mineru::web_assets_bundled()}};
     res.set_content(j.dump(), "application/json");
   });
 
   srv.Post("/file_parse", [&](const httplib::Request& req, httplib::Response& res) {
-    std::string pdf;
+    std::string pdf, backend = default_backend;
     int max_pages = -1;
     if (req.is_multipart_form_data()) {
       if (req.form.has_file("files")) pdf = req.form.get_file("files").content;
       if (req.form.has_field("max_pages")) {
         try { max_pages = std::stoi(req.form.get_field("max_pages")); } catch (...) {}
       }
+      if (req.form.has_field("backend")) backend = req.form.get_field("backend");
     } else {
       pdf = req.body;
+      if (req.has_param("backend")) backend = req.get_param_value("backend");
     }
     if (pdf.size() < 5 || pdf.compare(0, 5, "%PDF-") != 0) {
       res.status = 400;
       res.set_content("{\"error\":\"expected a PDF body or multipart 'files'\"}", "application/json");
       return;
     }
+    if (std::find(backends.begin(), backends.end(), backend) == backends.end()) {
+      res.status = 400;
+      res.set_content("{\"error\":\"unknown backend '" + backend + "'\"}", "application/json");
+      return;
+    }
     try {
       std::lock_guard<std::mutex> lock(infer_mtx);
       std::vector<uint8_t> bytes(pdf.begin(), pdf.end());
-      json out = convert(bytes, max_pages);
+      json out = convert(bytes, max_pages, backend);
       res.set_content(out.dump(), "application/json");
     } catch (const std::exception& ex) {
       res.status = 500;
@@ -414,8 +423,10 @@ static int run_web_server(const ConvertFn& convert, const std::string& backend_n
     });
   }
 
+  std::string blist;
+  for (size_t i = 0; i < backends.size(); ++i) blist += (i ? ", " : "") + backends[i];
   std::cerr << "[mlx-mineru] " << (serve_ui ? "web UI" : "API") << " on http://" << host << ":"
-            << port << "  (backend: " << backend_name << ")\n";
+            << port << "  (backends: " << blist << "; default " << default_backend << ")\n";
   if (!srv.listen(host, port)) {
     std::cerr << "[mlx-mineru] failed to bind " << host << ":" << port << "\n";
     return 1;
@@ -517,6 +528,133 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
 }
 #endif
 
+// Single-crop VLM understanding (used by the hybrid backend for image/chart regions).
+static std::string vlm_understand(const mineru::Qwen2VLModel& model,
+                                  const mineru::Qwen2Tokenizer& tok, std::vector<uint8_t> crop,
+                                  int cw, int ch, const std::string& type) {
+  const auto& cfg = model.config();
+  std::vector<uint8_t> rz = resize_by_need(crop, cw, ch);
+  mineru::VisionInput vi = mineru::preprocess_image(rz, cw, ch);
+  int nimg = vi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
+  std::vector<float> emb = model.forward_vision(vi.pixel_values, vi.grid_thw);
+  std::vector<int> prompt = build_prompt(tok, nimg, cfg.image_token_id, instruction_for(type));
+  std::vector<int> gen = model.generate_multimodal(prompt, emb, nimg, vi.grid_thw, 2048, kEos);
+  std::string c = tok.decode(gen, /*skip_special=*/true);
+  size_t a = c.find_first_not_of(" \t\r\n"), z = c.find_last_not_of(" \t\r\n");
+  return a == std::string::npos ? "" : c.substr(a, z - a + 1);
+}
+
+// Crop an axis-aligned region (page-point bbox * scale) from an RGB page image.
+static std::vector<uint8_t> crop_region(const std::vector<uint8_t>& rgb, int W, int H,
+                                        const json& bbox, double scale, int& cw, int& ch) {
+  int x0 = std::max(0, std::min(W, (int)std::lround(bbox[0].get<double>() * scale)));
+  int y0 = std::max(0, std::min(H, (int)std::lround(bbox[1].get<double>() * scale)));
+  int x1 = std::max(0, std::min(W, (int)std::lround(bbox[2].get<double>() * scale)));
+  int y1 = std::max(0, std::min(H, (int)std::lround(bbox[3].get<double>() * scale)));
+  cw = std::max(0, x1 - x0); ch = std::max(0, y1 - y0);
+  std::vector<uint8_t> c((size_t)cw * ch * 3);
+  for (int y = 0; y < ch; ++y)
+    for (int x = 0; x < cw; ++x)
+      for (int k = 0; k < 3; ++k)
+        c[((size_t)y * cw + x) * 3 + k] = rgb[((size_t)(y0 + y) * W + (x0 + x)) * 3 + k];
+  return c;
+}
+
+// Web/API server with per-request backend selection (vlm | pipeline | hybrid-engine).
+// Backends are lazy-loaded on first use, so --web/--server need no --backend binding.
+static int run_multi_backend_server(bool serve_ui, const std::string& host, int port,
+                                    const std::string& model_dir, const std::string& pl_models,
+                                    int bits, int dpi) {
+  std::mutex load_mtx;
+  std::unique_ptr<mineru::Qwen2Tokenizer> vtok;
+  std::unique_ptr<mineru::Qwen2VLModel> vmodel;
+  auto ensure_vlm = [&]() {
+    std::lock_guard<std::mutex> l(load_mtx);
+    if (vmodel) return;
+    std::cerr << "[mlx-mineru] loading VLM model ...\n";
+    vtok = std::make_unique<mineru::Qwen2Tokenizer>(mineru::Qwen2Tokenizer::load(model_dir));
+    mineru::Qwen2VLConfig cfg;
+    cfg.quantize_bits = bits;
+    vmodel = std::make_unique<mineru::Qwen2VLModel>(
+        mineru::Qwen2VLModel::load(model_dir + "/model.safetensors", cfg));
+  };
+  auto to_out = [](const json& pdf_info) {
+    std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+    json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+    return json{{"md_content", md}, {"content_list", cl}};
+  };
+
+  std::vector<std::string> backends = {"vlm"};
+  std::string default_backend = "vlm";
+#ifdef MINERU_HAVE_PIPELINE
+  namespace fsx = std::filesystem;
+  bool have_pl = fsx::exists(pl_models + "/Layout/layout.onnx");
+  std::unique_ptr<PipelineModels> pl;
+  auto ensure_pl = [&]() {
+    std::lock_guard<std::mutex> l(load_mtx);
+    if (!pl) pl = std::make_unique<PipelineModels>(load_pipeline_models(pl_models));
+  };
+  if (have_pl) { backends = {"hybrid-engine", "pipeline", "vlm"}; default_backend = "hybrid-engine"; }
+#endif
+
+  ConvertFn convert = [&](const std::vector<uint8_t>& bytes, int max_pages,
+                          const std::string& backend) -> json {
+    mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
+    int np = doc.page_count();
+    int e = (max_pages > 0) ? std::min(np, max_pages) - 1 : np - 1;
+#ifdef MINERU_HAVE_PIPELINE
+    if (backend == "pipeline" || backend == "hybrid-engine") {
+      ensure_pl();
+      // Render + build + assemble, keeping page images for the (hybrid) VLM image fill.
+      json model_list = json::array();
+      std::vector<mineru::PipelinePageImage> pages;
+      std::vector<std::pair<int, int>> dims;  // (w,h) per page for cropping
+      for (int p = 0; p <= e; ++p) {
+        mineru::PageImage im = doc.render_page(p, dpi);
+        model_list.push_back(mineru::build_page_model(*pl->layout, *pl->det, im.rgb, im.width,
+                                                      im.height, pl->mfr.get(), pl->table_ocr.get(),
+                                                      pl->table_rec.get()));
+        mineru::PipelinePageImage pg;
+        pg.page_w = (int)std::lround(im.width_pt);
+        pg.page_h = (int)std::lround(im.height_pt);
+        pg.w = im.width; pg.h = im.height;
+        dims.push_back({im.width, im.height});
+        pg.rgb = im.rgb;  // keep a copy for hybrid VLM crops
+        for (const mineru::PdfChar& c : doc.extract_chars(p))
+          pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
+        pages.push_back(std::move(pg));
+      }
+      json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pl->rec);
+      if (backend == "hybrid-engine") {
+        ensure_vlm();
+        for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
+          double scale = pages[p].page_w > 0 ? (double)dims[p].first / pages[p].page_w : 1.0;
+          for (auto& blk : pdf_info[p]["para_blocks"]) {
+            std::string t = blk.value("type", "");
+            if (t != "image" && t != "chart") continue;
+            for (auto& sub : blk["blocks"])
+              for (auto& ln : sub["lines"])
+                for (auto& sp : ln["spans"]) {
+                  if (!sp.contains("image_path")) continue;
+                  int cw, ch;
+                  auto crop = crop_region(pages[p].rgb, dims[p].first, dims[p].second,
+                                          sp["bbox"], scale, cw, ch);
+                  if (cw > 0 && ch > 0)
+                    sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
+                }
+          }
+        }
+      }
+      return to_out(pdf_info);
+    }
+#endif
+    ensure_vlm();
+    return to_out(convert_document(*vmodel, *vtok, doc, 0, e));
+  };
+
+  return run_web_server(convert, backends, default_backend, host, port, serve_ui);
+}
+
 int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
@@ -542,21 +680,13 @@ int main(int argc, char** argv) {
   app.add_option("--batch", batch_size, "Block generation batch size (default 6; 1 = sequential)");
   CLI11_PARSE(app, argc, argv);
 
+  // Web / API server: per-request backend selection (vlm | pipeline | hybrid-engine),
+  // lazy-loaded — no --backend binding needed.
+  if (web || server)
+    return run_multi_backend_server(web, host, port, model_dir, pipeline_models, bits, pipeline_dpi);
+
   if (backend == "pipeline") {
 #ifdef MINERU_HAVE_PIPELINE
-    if (web || server) {
-      PipelineModels pm = load_pipeline_models(pipeline_models);
-      ConvertFn convert = [&](const std::vector<uint8_t>& bytes, int max_pages) -> json {
-        mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
-        int np = doc.page_count();
-        int e = (max_pages > 0) ? std::min(np, max_pages) - 1 : np - 1;
-        json pdf_info = pipeline_doc_to_pdf_info(pm, doc, pipeline_dpi, 0, e);
-        std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
-        json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
-        return json{{"md_content", md}, {"content_list", cl}};
-      };
-      return run_web_server(convert, "pipeline", host, port, web);
-    }
     if (pdf_path.empty()) { std::cerr << "--path is required for the pipeline backend\n"; return 2; }
     return run_pipeline(pdf_path, pipeline_models, out_dir, start_page, end_page, pipeline_dpi);
 #else
@@ -578,19 +708,6 @@ int main(int argc, char** argv) {
   auto t_loaded = std::chrono::steady_clock::now();
   std::cerr << "[mlx-mineru] model loaded in "
             << std::chrono::duration<double>(t_loaded - t0).count() << "s\n";
-
-  if (web || server) {
-    ConvertFn convert = [&](const std::vector<uint8_t>& bytes, int max_pages) -> json {
-      mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
-      int np = doc.page_count();
-      int e = (max_pages > 0) ? std::min(np, max_pages) - 1 : -1;
-      json pdf_info = convert_document(model, tok, doc, 0, e);
-      std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
-      json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
-      return json{{"md_content", md}, {"content_list", cl}};
-    };
-    return run_web_server(convert, "vlm", host, port, web);
-  }
 
   if (pdf_path.empty()) { std::cerr << "--path is required (or use --server)\n"; return 2; }
   mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);

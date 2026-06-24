@@ -29,7 +29,8 @@ const std::map<std::string, std::string>& labels_map() {
       {"paragraph_title", "paragraph_title"}, {"reference_content", "ref_text"},
       {"text", "text"},                {"vertical_text", "vertical_text"},
       {"vision_footnote", "footnote"}, {"display_formula", "interline_equation"},
-      {"table", "table"},
+      {"table", "table"},             {"image", "image"},
+      {"chart", "chart"},
   };
   return m;
 }
@@ -326,6 +327,16 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
       json line = {{"bbox", box_json(r.bbox)}, {"spans", json::array({span})}};
       blocks.push_back({{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
                         {"type", "table"}, {"lines", json::array({line})}});
+      continue;
+    }
+    // Image / chart: flat visual block with an image span (image_path + content filled later
+    // by the VLM in hybrid mode); classify_visual_blocks wraps it + attaches caption/footnote.
+    if (r.type == "image" || r.type == "chart") {
+      json span = {{"bbox", box_json(r.bbox)}, {"type", r.type}, {"image_path", ""},
+                   {"content", ""}};
+      json line = {{"bbox", box_json(r.bbox)}, {"spans", json::array({span})}};
+      blocks.push_back({{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
+                        {"type", r.type}, {"lines", json::array({line})}});
       continue;
     }
     std::vector<Span> blk_spans;
