@@ -55,5 +55,27 @@ int main(int argc, char** argv) {
   }
   CHECK_MSG(ok == (int)n, "table_body html matches MinerU");
   std::cerr << "pipeline_table: " << ok << "/" << n << " table HTML match\n";
+
+  // Caption/footnote nesting: each table's child block types must match MinerU.
+  auto child_types = [](const json& blocks) {
+    std::vector<std::vector<std::string>> v;
+    for (const auto& b : blocks)
+      if (b.value("type", "") == "table") {
+        std::vector<std::string> k;
+        for (const auto& c : b.value("blocks", json::array())) k.push_back(c.value("type", ""));
+        v.push_back(k);
+      }
+    return v;
+  };
+  auto gc = child_types(got["para_blocks"]), wc = child_types(want["para_blocks"]);
+  int nest_ok = 0;
+  for (size_t i = 0; i < std::min(gc.size(), wc.size()); ++i) {
+    if (gc[i] == wc[i]) ++nest_ok;
+    else {
+      std::cerr << "  table " << i << " children differ\n";
+    }
+  }
+  CHECK_MSG(nest_ok == (int)wc.size(), "table caption/body/footnote nesting matches MinerU");
+  std::cerr << "pipeline_table: " << nest_ok << "/" << wc.size() << " table nestings match\n";
   return TEST_SUMMARY();
 }

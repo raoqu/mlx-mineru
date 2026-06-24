@@ -24,22 +24,25 @@ struct SpanJob {
 void collect(json& blocks, const std::vector<uint8_t>& rgb, int W, int H, double scale,
              std::vector<SpanJob>& jobs, bool only_empty) {
   for (auto& b : blocks) {
-    if (!b.contains("lines")) continue;
-    for (auto& ln : b["lines"]) {
-      if (!ln.contains("spans")) continue;
-      for (auto& sp : ln["spans"]) {
-        if (sp.value("type", "") != "text") continue;
-        if (only_empty && !sp.value("content", "").empty()) continue;
-        auto bb = sp["bbox"];
-        // span bbox is page-point; scale up to image coords, build a 4-corner quad.
-        float x0 = bb[0].get<float>() * scale, y0 = bb[1].get<float>() * scale;
-        float x1 = bb[2].get<float>() * scale, y1 = bb[3].get<float>() * scale;
-        Quad q{{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}};
-        int cw, ch;
-        auto crop = get_rotate_crop_image(rgb, W, H, q, cw, ch);
-        jobs.push_back({&sp, std::move(crop), cw, ch});
+    if (b.contains("lines")) {
+      for (auto& ln : b["lines"]) {
+        if (!ln.contains("spans")) continue;
+        for (auto& sp : ln["spans"]) {
+          if (sp.value("type", "") != "text") continue;
+          if (only_empty && !sp.value("content", "").empty()) continue;
+          auto bb = sp["bbox"];
+          // span bbox is page-point; scale up to image coords, build a 4-corner quad.
+          float x0 = bb[0].get<float>() * scale, y0 = bb[1].get<float>() * scale;
+          float x1 = bb[2].get<float>() * scale, y1 = bb[3].get<float>() * scale;
+          Quad q{{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}};
+          int cw, ch;
+          auto crop = get_rotate_crop_image(rgb, W, H, q, cw, ch);
+          jobs.push_back({&sp, std::move(crop), cw, ch});
+        }
       }
     }
+    // Descend into nested two-layer blocks (table/image/chart children).
+    if (b.contains("blocks")) collect(b["blocks"], rgb, W, H, scale, jobs, only_empty);
   }
 }
 }  // namespace

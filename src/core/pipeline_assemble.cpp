@@ -105,6 +105,177 @@ json build_lines(std::vector<Span> spans) {
   return lines;
 }
 
+// ---- visual block classify (caption/footnote -> table/image/chart) -----------
+using Bbox4 = std::array<double, 4>;
+Bbox4 block_bbox(const json& b) {
+  return {b["bbox"][0], b["bbox"][1], b["bbox"][2], b["bbox"][3]};
+}
+bool is_main_type(const std::string& t) { return t == "table" || t == "image" || t == "chart"; }
+bool is_child_type(const std::string& t) { return t == "caption" || t == "footnote"; }
+
+bool boxes_overlap(const Bbox4& a, const Bbox4& b) {
+  return !(a[2] <= b[0] || a[0] >= b[2] || a[3] <= b[1] || a[1] >= b[3]);
+}
+void relpos(const Bbox4& a, const Bbox4& b, bool& left, bool& right, bool& bottom, bool& top) {
+  left = b[2] < a[0]; right = a[2] < b[0]; bottom = b[3] < a[1]; top = a[3] < b[1];
+}
+double bbox_distance(const Bbox4& a, const Bbox4& b) {
+  auto d = [](double px, double py, double qx, double qy) {
+    return std::hypot(px - qx, py - qy);
+  };
+  bool l, r, bo, t;
+  relpos(a, b, l, r, bo, t);
+  if (t && l) return d(a[0], a[3], b[2], b[1]);
+  if (l && bo) return d(a[0], a[1], b[2], b[3]);
+  if (bo && r) return d(a[2], a[1], b[0], b[3]);
+  if (r && t) return d(a[2], a[3], b[0], b[1]);
+  if (l) return a[0] - b[2];
+  if (r) return b[0] - a[2];
+  if (bo) return a[1] - b[3];
+  if (t) return b[1] - a[3];
+  return 0.0;
+}
+double bbox_center_dist(const Bbox4& a, const Bbox4& b) {
+  return std::hypot((a[0] + a[2]) / 2 - (b[0] + b[2]) / 2, (a[1] + a[3]) / 2 - (b[1] + b[3]) / 2);
+}
+// vertical_gap_between_blocks: {top,bottom} of the gap if separated, else invalid (.first<0).
+std::array<double, 2> vgap(const Bbox4& a, const Bbox4& b) {
+  if (a[3] <= b[1]) return {a[3], b[1]};
+  if (b[3] <= a[1]) return {b[3], a[1]};
+  return {-1, -1};
+}
+
+// is_visual_neighbor: child & main are adjacent in reading order with only allowed types
+// (or visually-outside-the-gap blocks) between them.
+bool is_visual_neighbor(int ci, int mi, const std::vector<json>& ord) {
+  const json& child = ord[ci];
+  const json& main = ord[mi];
+  std::string ct = child["type"];
+  if (ct == "footnote" && child["index"].get<int>() < main["index"].get<int>()) return false;
+  Bbox4 cb = block_bbox(child), mb = block_bbox(main);
+  auto gap = vgap(cb, mb);
+  int a = std::min(ci, mi) + 1, z = std::max(ci, mi);
+  for (int p = a; p < z; ++p) {
+    std::string bt = ord[p]["type"];
+    bool allowed = (ct == "caption") ? (bt == "caption")
+                                     : (bt == "caption" || bt == "footnote");
+    if (allowed) continue;
+    // is_block_outside_visual_gap: between block not overlapping child/main and not in gap.
+    Bbox4 bb = block_bbox(ord[p]);
+    bool outside = false;
+    if (gap[0] >= 0 && !(boxes_overlap(bb, cb) || boxes_overlap(bb, mb)) &&
+        !(bb[1] < gap[1] && bb[3] > gap[0]))
+      outside = true;
+    if (outside) continue;
+    return false;
+  }
+  return true;
+}
+int eff_index_diff(int ci, int mi, const std::vector<json>& ord) {
+  std::string ct = ord[ci]["type"];
+  int a = std::min(ci, mi), z = std::max(ci, mi), skipped = 0;
+  for (int p = a + 1; p < z; ++p)
+    if (ord[p]["type"] == ct) ++skipped;
+  return z - a - skipped;
+}
+// find_best_visual_parent: returns the index into `ord` of the best main block, or -1.
+int find_best_parent(int ci, const std::vector<int>& mains, const std::vector<json>& ord) {
+  std::vector<int> cand;
+  for (int mi : mains)
+    if (is_visual_neighbor(ci, mi, ord)) cand.push_back(mi);
+  if (cand.empty()) return -1;
+  int best_diff = 1 << 30;
+  for (int mi : cand) best_diff = std::min(best_diff, eff_index_diff(ci, mi, ord));
+  std::vector<int> closest;
+  for (int mi : cand)
+    if (eff_index_diff(ci, mi, ord) == best_diff) closest.push_back(mi);
+  if (closest.size() == 1) return closest[0];
+  Bbox4 cb = block_bbox(ord[ci]);
+  std::vector<double> edges;
+  for (int mi : closest) edges.push_back(bbox_distance(cb, block_bbox(ord[mi])));
+  double emin = *std::min_element(edges.begin(), edges.end());
+  double emax = *std::max_element(edges.begin(), edges.end());
+  if (emax - emin > 2) {  // pick min edge distance, tie-break by index
+    int best = closest[0];
+    double bd = 1e300;
+    for (int mi : closest) {
+      double d = bbox_distance(cb, block_bbox(ord[mi]));
+      if (d < bd || (d == bd && ord[mi]["index"] < ord[best]["index"])) { bd = d; best = mi; }
+    }
+    return best;
+  }
+  std::string ct = ord[ci]["type"];
+  if (ct == "caption") {  // tables: prefer the later table when equidistant
+    bool all_table = true;
+    for (int mi : closest) if (ord[mi]["type"] != "table") all_table = false;
+    if (all_table) {
+      int best = closest[0];
+      for (int mi : closest) if (ord[mi]["index"] > ord[best]["index"]) best = mi;
+      return best;
+    }
+  }
+  if (ct == "footnote") {  // prefer the earlier main
+    int best = closest[0];
+    for (int mi : closest) if (ord[mi]["index"] < ord[best]["index"]) best = mi;
+    return best;
+  }
+  int best = closest[0];
+  double bd = 1e300;
+  for (int mi : closest) {
+    double d = bbox_center_dist(cb, block_bbox(ord[mi]));
+    if (d < bd || (d == bd && ord[mi]["index"] < ord[best]["index"])) { bd = d; best = mi; }
+  }
+  return best;
+}
+
+// __classify_visual_blocks: wrap each table/image/chart main block as a two-layer block with
+// its associated caption/footnote children (figure_title->caption, vision_footnote->footnote).
+void classify_visual_blocks(std::vector<json>& blocks) {
+  std::sort(blocks.begin(), blocks.end(),
+            [](const json& a, const json& b) { return a["index"] < b["index"]; });
+  std::vector<int> mains, children;
+  for (int i = 0; i < (int)blocks.size(); ++i) {
+    std::string t = blocks[i]["type"];
+    if (is_main_type(t)) mains.push_back(i);
+    else if (is_child_type(t)) children.push_back(i);
+  }
+  if (mains.empty()) return;
+  std::map<int, int> child_parent;  // child idx -> main idx (in blocks), -1 if none
+  for (int ci : children) child_parent[ci] = find_best_parent(ci, mains, blocks);
+
+  // body/caption/footnote type names per main type.
+  auto body_type = [](const std::string& m) { return m + "_body"; };
+  auto cap_type = [](const std::string& m) { return m + "_caption"; };
+  auto foot_type = [](const std::string& m) { return m + "_footnote"; };
+  std::map<int, std::vector<int>> caps, foots;
+  for (int ci : children) {
+    int pi = child_parent[ci];
+    if (pi < 0) continue;
+    (blocks[ci]["type"] == "caption" ? caps : foots)[pi].push_back(ci);
+  }
+
+  std::vector<json> out;
+  for (int i = 0; i < (int)blocks.size(); ++i) {
+    std::string t = blocks[i]["type"];
+    if (is_child_type(t)) {
+      if (child_parent[i] < 0) { blocks[i]["type"] = "text"; out.push_back(blocks[i]); }
+      continue;  // associated children are emitted under their parent
+    }
+    if (!is_main_type(t)) { out.push_back(blocks[i]); continue; }
+    json body = blocks[i];
+    body["type"] = body_type(t);
+    json children_blocks = json::array();
+    children_blocks.push_back(body);
+    for (int ci : caps[i]) { json c = blocks[ci]; c["type"] = cap_type(t); children_blocks.push_back(c); }
+    for (int ci : foots[i]) { json c = blocks[ci]; c["type"] = foot_type(t); children_blocks.push_back(c); }
+    std::sort(children_blocks.begin(), children_blocks.end(),
+              [](const json& a, const json& b) { return a["index"] < b["index"]; });
+    out.push_back({{"type", t}, {"bbox", blocks[i]["bbox"]}, {"blocks", children_blocks},
+                   {"index", blocks[i]["index"]}, {"score", blocks[i].value("score", 0.0)}});
+  }
+  blocks = std::move(out);
+}
+
 }  // namespace
 
 json assemble_page_info(const json& model_page, int page_w, int page_h, int page_idx) {
@@ -148,16 +319,13 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
                         {"type", "interline_equation"}, {"lines", json::array({line})}});
       continue;
     }
-    // Table: two-layer block {type:table, blocks:[table_body(html span)]}. NOTE: caption/
-    // footnote association (find_best_visual_parent) is a documented follow-up, so captions
-    // (figure_title) and footnotes (vision_footnote) stay as their own blocks for now.
+    // Table: flat block carrying the html span; classify_visual_blocks wraps it into a
+    // two-layer block and attaches associated caption/footnote children.
     if (r.type == "table") {
       json span = {{"bbox", box_json(r.bbox)}, {"type", "table"}, {"html", r.html}};
       json line = {{"bbox", box_json(r.bbox)}, {"spans", json::array({span})}};
-      json body = {{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
-                   {"type", "table_body"}, {"lines", json::array({line})}};
-      blocks.push_back({{"type", "table"}, {"bbox", box_json(r.bbox)}, {"index", r.index},
-                        {"score", r.score}, {"blocks", json::array({body})}});
+      blocks.push_back({{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
+                        {"type", "table"}, {"lines", json::array({line})}});
       continue;
     }
     std::vector<Span> blk_spans;
@@ -180,6 +348,9 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
     if (has_level) block["level"] = level;
     blocks.push_back(block);
   }
+
+  // __classify_visual_blocks: wrap table/image/chart with associated caption/footnote.
+  classify_visual_blocks(blocks);
 
   std::stable_sort(blocks.begin(), blocks.end(),
                    [](const json& a, const json& b) { return a["index"] < b["index"]; });
@@ -329,17 +500,24 @@ std::string chars_to_content(std::vector<const PageChar*>& cs) {
   return out;
 }
 
+// Collect text-span pointers from a block list, descending into nested "blocks" (two-layer
+// table/image/chart blocks).
+struct SpanRef { json* sp; std::array<double, 4> bbox; std::vector<const PageChar*> cs; };
+void collect_text_spans(json& blocks, std::vector<SpanRef>& spans) {
+  for (auto& b : blocks) {
+    if (b.contains("lines"))
+      for (auto& ln : b["lines"])
+        for (auto& sp : ln["spans"])
+          if (sp.value("type", "") == "text")
+            spans.push_back({&sp, {sp["bbox"][0], sp["bbox"][1], sp["bbox"][2], sp["bbox"][3]}, {}});
+    if (b.contains("blocks")) collect_text_spans(b["blocks"], spans);
+  }
+}
+
 // Fill one block list's text spans from the page chars.
 int fill_one(json& blocks, const std::vector<PageChar>& chars) {
-  struct SpanRef { json* sp; std::array<double, 4> bbox; std::vector<const PageChar*> cs; };
   std::vector<SpanRef> spans;
-  for (auto& b : blocks) {
-    if (!b.contains("lines")) continue;
-    for (auto& ln : b["lines"])
-      for (auto& sp : ln["spans"])
-        if (sp.value("type", "") == "text")
-          spans.push_back({&sp, {sp["bbox"][0], sp["bbox"][1], sp["bbox"][2], sp["bbox"][3]}, {}});
-  }
+  collect_text_spans(blocks, spans);
   std::sort(spans.begin(), spans.end(),
             [](const SpanRef& a, const SpanRef& b) { return a.bbox[1] < b.bbox[1]; });
   // Assign each char to the first span (top-to-bottom) it falls in.
