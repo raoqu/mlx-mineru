@@ -60,9 +60,17 @@ def main():
     polys = out.cell_bboxes  # (N, 8)
     logi = out.logic_points  # (N, 4) row_start,row_end,col_start,col_end
 
+    # Stage 4 golden: structure HTML (empty cells) via plot_html_table. need_ocr=False stores
+    # cell_bboxes as box_4_1 [xmin,ymin,xmax,ymax]; convert back to box_4_2 (N,4,2).
+    from mineru.model.table.rec.unet_table.utils_table_recover import (
+        plot_html_table, box_4_1_poly_to_box_4_2)
+    polys42 = np.array([box_4_1_poly_to_box_4_2(b) for b in polys]) if polys is not None else None
+    struct_html = plot_html_table(logi, {}, polys42) if polys is not None else ""
+
     meta = {"input": "wired_table_input.rgb", "w": int(w), "h": int(h),
             "inp_shape": list(inp.shape), "seg_shape": list(pred.shape),
-            "n_cells": int(len(polys)) if polys is not None else 0}
+            "n_cells": int(len(polys)) if polys is not None else 0,
+            "structure_html": struct_html}
     json.dump(meta, open(os.path.join(GOLDEN, "wired_table.json"), "w"), indent=1)
     if polys is not None:
         np.array(polys).astype(np.float32).tofile(os.path.join(GOLDEN, "wired_table_polys.f32"))

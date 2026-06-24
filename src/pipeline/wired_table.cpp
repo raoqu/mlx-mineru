@@ -411,4 +411,95 @@ WiredTableRecognizer::Structure WiredTableRecognizer::recognize_structure(
   return S;
 }
 
+// ---- Stage 4: logical grid -> HTML (plot_html_table) ------------------------
+namespace {
+double median(std::vector<double> v) {
+  if (v.empty()) return -1;
+  std::sort(v.begin(), v.end());
+  size_t n = v.size();
+  return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
+}
+}  // namespace
+
+std::string WiredTableRecognizer::plot_html(const Structure& s,
+                                            const std::vector<std::string>& cell_text) {
+  int N = (int)s.logic.size();
+  if (N == 0) return "<html><body><table></table></body></html>";
+  auto txt = [&](int i) -> std::string { return i < (int)cell_text.size() ? cell_text[i] : ""; };
+  auto has_text = [&](int i) {
+    std::string t = txt(i);
+    return t.find_first_not_of(" \t\r\n") != std::string::npos;
+  };
+  int max_row = 0, max_col = 0;
+  for (auto& l : s.logic) { max_row = std::max(max_row, l[1] + 1); max_col = std::max(max_col, l[3] + 1); }
+  // grid[r][c] = cell index (or -1).
+  std::vector<std::vector<int>> grid(max_row, std::vector<int>(max_col, -1));
+  for (int i = 0; i < N; ++i) {
+    auto& l = s.logic[i];
+    for (int r = l[0]; r <= l[1]; ++r)
+      for (int c = l[2]; c <= l[3]; ++c) grid[r][c] = i;
+  }
+  // estimate_axis_sizes: per row/col median cell size (from cell AABB / span).
+  std::vector<std::vector<double>> rs(max_row), cs(max_col);
+  for (int i = 0; i < N; ++i) {
+    auto& p = s.polygons[i];
+    double x0 = std::min({p[0], p[2], p[4], p[6]}), y0 = std::min({p[1], p[3], p[5], p[7]});
+    double x1 = std::max({p[0], p[2], p[4], p[6]}), y1 = std::max({p[1], p[3], p[5], p[7]});
+    auto& l = s.logic[i];
+    double cspan = std::max(l[3] - l[2] + 1, 1), rspan = std::max(l[1] - l[0] + 1, 1);
+    double csz = std::max((x1 - x0) / cspan, 0.0), rsz = std::max((y1 - y0) / rspan, 0.0);
+    if (csz > 0) for (int c = l[2]; c <= l[3]; ++c) if (c >= 0 && c < max_col) cs[c].push_back(csz);
+    if (rsz > 0) for (int r = l[0]; r <= l[1]; ++r) if (r >= 0 && r < max_row) rs[r].push_back(rsz);
+  }
+  std::vector<double> row_sz(max_row), col_sz(max_col);
+  for (int r = 0; r < max_row; ++r) row_sz[r] = median(rs[r]);
+  for (int c = 0; c < max_col; ++c) col_sz[c] = median(cs[c]);
+  // trim_noise_edges.
+  int r0 = 0, r1 = max_row - 1, c0 = 0, c1 = max_col - 1;
+  auto ref_size = [](const std::vector<double>& sz, int idx) {
+    std::vector<double> o;
+    for (int i = 0; i < (int)sz.size(); ++i) if (i != idx && sz[i] > 0) o.push_back(sz[i]);
+    return median(o);
+  };
+  auto abnormal = [&](const std::vector<double>& sz, int idx) {
+    double a = sz[idx], ref = ref_size(sz, idx);
+    if (a <= 0 || ref <= 0) return false;
+    double ratio = a / ref;
+    return ratio < 0.35 || ratio > 2.5;
+  };
+  auto is_noise = [&](bool is_col, int idx) {
+    // edge_axis_has_text
+    if (is_col) { for (int r = r0; r <= r1; ++r) if (grid[r][idx] >= 0 && has_text(grid[r][idx])) return false; }
+    else { for (int c = c0; c <= c1; ++c) if (grid[idx][c] >= 0 && has_text(grid[idx][c])) return false; }
+    int covered = 0, total;
+    if (is_col) { for (int r = r0; r <= r1; ++r) covered += grid[r][idx] >= 0; total = r1 - r0 + 1; }
+    else { for (int c = c0; c <= c1; ++c) covered += grid[idx][c] >= 0; total = c1 - c0 + 1; }
+    if (covered == 0 || covered < total) return true;
+    return abnormal(is_col ? col_sz : row_sz, idx);
+  };
+  while (r0 <= r1 && is_noise(false, r0)) ++r0;
+  while (r1 >= r0 && is_noise(false, r1)) --r1;
+  while (c0 <= c1 && is_noise(true, c0)) ++c0;
+  while (c1 >= c0 && is_noise(true, c1)) --c1;
+
+  std::string html = "<html><body><table>";
+  if (r0 > r1 || c0 > c1) return html + "</table></body></html>";
+  for (int row = r0; row <= r1; ++row) {
+    std::string tr = "<tr>";
+    for (int col = c0; col <= c1; ++col) {
+      int ci = grid[row][col];
+      if (ci < 0) { tr += "<td></td>"; continue; }
+      auto& l = s.logic[ci];
+      int crs = std::max(l[0], r0), ccs = std::max(l[2], c0);
+      if (row == crs && col == ccs) {
+        int rspan = std::min(l[1], r1) - crs + 1, cspan = std::min(l[3], c1) - ccs + 1;
+        tr += "<td rowspan=" + std::to_string(rspan) + " colspan=" + std::to_string(cspan) + ">" +
+              txt(ci) + "</td>";
+      }
+    }
+    html += tr + "</tr>";
+  }
+  return html + "</table></body></html>";
+}
+
 }  // namespace mineru

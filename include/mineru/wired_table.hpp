@@ -40,6 +40,10 @@ class WiredTableRecognizer {
   };
   Structure recognize_structure(const std::vector<uint8_t>& rgb, int w, int h) const;
 
+  // Stage 4: logical grid -> HTML. cell_text maps cell index -> text (empty -> structure
+  // only). Faithful to plot_html_table (grid build + noise-edge trim + rowspan/colspan).
+  static std::string plot_html(const Structure& s, const std::vector<std::string>& cell_text);
+
  private:
   WiredTableRecognizer();
   struct Impl;

@@ -104,5 +104,13 @@ int main(int argc, char** argv) {
   }
   std::cerr << "wired logic: " << lmatch << "/" << st.logic.size() << " match MinerU\n";
   CHECK_MSG(lmatch == (int)st.logic.size(), "logical grid (row/col spans) matches MinerU");
+
+  // Stage 4: structure HTML (empty cells) vs golden plot_html_table.
+  std::string html = mineru::WiredTableRecognizer::plot_html(st, {});
+  std::string want_html = g.value("structure_html", "");
+  bool html_ok = (html == want_html);
+  CHECK_MSG(html_ok, "structure HTML matches MinerU (noise-edge trim + rowspan/colspan)");
+  if (!html_ok) std::cerr << "  got : " << html << "\n  want: " << want_html << "\n";
+  std::cerr << "wired html: " << (html_ok ? "matches" : "DIFFERS") << " MinerU (4x4, sliver trimmed)\n";
   return TEST_SUMMARY();
 }
