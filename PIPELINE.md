@@ -82,8 +82,14 @@ largest remaining task; it advances phase by phase with golden verification.
   the same prob-map: **19/19 boxes, ≤1px per coordinate** (residual is float32
   minAreaRect vs OpenCV, sub-pixel). Golden: `scripts/gen_ocr_det_golden.py` saves
   the prob-map + real cv2/pyclipper boxes, isolating geometry from the resize.
-- **Next OCR (C++)**: det preprocess (DetResizeForTest max-960/32 + normalize) +
-  ocr_det.onnx wrapper, then chain det->crop->rec for end-to-end text on a page.
+- **P3 OCR det end-to-end ✅**: `TextDetector` (`src/pipeline/ocr_det.cpp`) —
+  DetResizeForTest (limit_type="max" 960, round/32, half-to-even) + NormalizeImage
+  (mean/std, RGB, CHW) + ocr_det.onnx + db_postprocess. `ctest ocr_det` runs the full
+  C++ path on the saved a.pdf render: **19/19 boxes match MinerU within ≤1px/coord**
+  (cv2.resize vs our half-pixel bilinear is the only residual). Detector takes RGB +
+  (w,h), returns text-line quads in source pixels — ready to crop and feed rec.
+- **Next OCR (C++)**: chain det->crop(perspective/rotate)->rec for full page text
+  (MinerU `get_rotate_crop_image`), then per-region OCR in the pipeline assembly.
 - **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
   layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
   assembly (P5).

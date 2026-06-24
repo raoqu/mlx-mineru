@@ -1,10 +1,14 @@
 // Copyright (c) mlx-mineru.
-// Faithful port of mineru pytorchocr DBPostProcess (box_type="quad").
+// Faithful port of mineru pytorchocr DBPostProcess (box_type="quad") + the
+// DetResizeForTest/Normalize preprocess and the ocr_det.onnx wrapper.
 #include "mineru/ocr_det.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <vector>
+
+#include "mineru/image_preprocess.hpp"  // resize_bilinear_rgb8
+#include "onnxruntime_cxx_api.h"
 
 namespace mineru {
 namespace {
@@ -207,6 +211,71 @@ std::vector<DetBox> db_postprocess(const std::vector<float>& pred, int H, int W,
     }
   }
   return out;
+}
+
+// ---- end-to-end detector ----------------------------------------------------
+
+struct TextDetector::Impl {
+  Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-det"};
+  Ort::SessionOptions opts;
+  std::unique_ptr<Ort::Session> session;
+  std::string in_name, out_name;
+};
+
+TextDetector::TextDetector() : impl_(std::make_unique<Impl>()) {}
+TextDetector::~TextDetector() = default;
+TextDetector::TextDetector(TextDetector&&) noexcept = default;
+TextDetector& TextDetector::operator=(TextDetector&&) noexcept = default;
+
+TextDetector TextDetector::load(const std::string& onnx_path) {
+  TextDetector d;
+  Impl& m = *d.impl_;
+  m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
+  Ort::AllocatorWithDefaultOptions alloc;
+  m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
+  m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  return d;
+}
+
+std::vector<DetBox> TextDetector::detect(const std::vector<uint8_t>& rgb, int w, int h) const {
+  const Impl& m = *impl_;
+  // DetResizeForTest (limit_type="max", limit_side_len=960, max_side_limit=4000).
+  constexpr int kLimit = 960, kMaxSide = 4000;
+  double ratio = std::max(h, w) > kLimit ? (double)kLimit / std::max(h, w) : 1.0;
+  int rh = (int)(h * ratio), rw = (int)(w * ratio);
+  if (std::max(rh, rw) > kMaxSide) {
+    double r2 = (double)kMaxSide / std::max(rh, rw);
+    rh = (int)(rh * r2);
+    rw = (int)(rw * r2);
+  }
+  rh = std::max((int)(round_half_even(rh / 32.0) * 32), 32);
+  rw = std::max((int)(round_half_even(rw / 32.0) * 32), 32);
+
+  std::vector<uint8_t> resized = resize_bilinear_rgb8(rgb, w, h, rw, rh);
+  // NormalizeImage (order hwc): (px/255 - mean)/std, RGB; then ToCHWImage.
+  static const float kMean[3] = {0.485f, 0.456f, 0.406f};
+  static const float kStd[3] = {0.229f, 0.224f, 0.225f};
+  std::vector<float> input(static_cast<size_t>(3) * rh * rw);
+  for (int y = 0; y < rh; ++y)
+    for (int x = 0; x < rw; ++x)
+      for (int c = 0; c < 3; ++c)
+        input[(static_cast<size_t>(c) * rh + y) * rw + x] =
+            (resized[(static_cast<size_t>(y) * rw + x) * 3 + c] / 255.0f - kMean[c]) / kStd[c];
+
+  std::array<int64_t, 4> ishape{1, 3, rh, rw};
+  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
+  const char* in_names[] = {m.in_name.c_str()};
+  const char* out_names[] = {m.out_name.c_str()};
+  auto outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
+                                                        out_names, 1);
+  auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
+  int Hd = (int)oshape[2], Wd = (int)oshape[3];
+  const float* p = outs[0].GetTensorData<float>();
+  std::vector<float> prob(p, p + static_cast<size_t>(Hd) * Wd);
+
+  std::array<double, 4> shape{(double)h, (double)w, (double)rh / h, (double)rw / w};
+  return db_postprocess(prob, Hd, Wd, shape);
 }
 
 }  // namespace mineru

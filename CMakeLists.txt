@@ -282,6 +282,7 @@ if(HAVE_ORT)
     target_include_directories(test_ocr_det PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_ocr_det PRIVATE mineru_pipeline)
     set_target_properties(test_ocr_det PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
-    add_test(NAME ocr_det COMMAND test_ocr_det ${CMAKE_SOURCE_DIR}/tests/golden)
+    add_test(NAME ocr_det COMMAND test_ocr_det ${CMAKE_SOURCE_DIR}/tests/golden
+              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx)
   endif()
 endif()

@@ -33,6 +33,8 @@ post = DBPostProcess(thresh=0.3, box_thresh=0.6, max_candidates=1000, unclip_rat
                      use_dilation=False, score_mode="fast", box_type="quad")
 
 img = np.asarray(pdfium.PdfDocument(os.path.join(HERE, "a.pdf"))[0].render(scale=2).to_pil().convert("RGB"))
+src_h, src_w = img.shape[:2]
+np.ascontiguousarray(img).tofile(os.path.join(GOLDEN, "ocr_det_input.rgb"))  # for the C++ e2e test
 data = transform({"image": img.copy(), "polys": np.zeros((0, 4, 2), np.float32)}, pre_ops)
 x, shape_list = data[0][None], np.array([data[1]])
 
@@ -44,6 +46,7 @@ pred[0, 0].astype(np.float32).tofile(os.path.join(GOLDEN, "ocr_det_probmap.f32")
 boxes = post({"maps": pred}, shape_list)[0]["points"]
 boxes = [np.array(b).reshape(-1, 2).astype(int).tolist() for b in boxes]
 out = {"probmap": "ocr_det_probmap.f32", "Hd": Hd, "Wd": Wd,
+       "input": "ocr_det_input.rgb", "src_w": int(src_w), "src_h": int(src_h),
        "shape_list": [float(v) for v in shape_list[0]],
        "thresh": 0.3, "box_thresh": 0.6, "unclip_ratio": 1.5,
        "boxes": boxes}

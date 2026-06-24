@@ -2,6 +2,9 @@
  "probmap": "ocr_det_probmap.f32",
  "Hd": 960,
  "Wd": 736,
+ "input": "ocr_det_input.rgb",
+ "src_w": 1224,
+ "src_h": 1584,
  "shape_list": [
   1584.0,
   1224.0,
