@@ -26,6 +26,12 @@
 #include "mineru/tokenizer.hpp"
 #include "mineru/vlm_layout.hpp"
 #include "nlohmann/json.hpp"
+#ifdef MINERU_HAVE_PIPELINE
+#include "mineru/layout_det.hpp"
+#include "mineru/ocr_det.hpp"
+#include "mineru/ocr_rec.hpp"
+#include "mineru/pipeline_driver.hpp"
+#endif
 
 using nlohmann::json;
 namespace bt = mineru::block_type;
@@ -382,12 +388,75 @@ static int run_server(const mineru::Qwen2VLModel& model, const mineru::Qwen2Toke
   return 0;
 }
 
+#ifdef MINERU_HAVE_PIPELINE
+// Native pipeline backend: render -> layout(+reading order) + OCR det -> model_list ->
+// assemble + post-OCR text-fill -> union_make. No VLM model needed.
+static int run_pipeline(const std::string& pdf_path, const std::string& models,
+                        const std::string& out_dir, int start_page, int end_page, int dpi) {
+  namespace fs = std::filesystem;
+  mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);
+  int npages = doc.page_count();
+  int s = std::clamp(start_page, 0, npages - 1);
+  int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
+  std::cerr << "[mlx-mineru] pipeline backend: " << pdf_path << " pages " << s << ".." << e
+            << " of " << npages << "\n";
+
+  auto t0 = Clock::now();
+  mineru::LayoutDetector layout = mineru::LayoutDetector::load(models + "/Layout");
+  mineru::TextDetector det = mineru::TextDetector::load(models + "/OCR/ocr_det.onnx");
+  mineru::TextRecognizer rec =
+      mineru::TextRecognizer::load(models + "/OCR/ocr_rec.onnx", models + "/OCR/ppocrv6_dict.txt");
+  std::cerr << "[mlx-mineru] pipeline models loaded in " << secs(t0, Clock::now()) << "s\n";
+
+  auto t_inf = Clock::now();
+  json model_list = json::array();
+  std::vector<mineru::PipelinePageImage> pages;
+  for (int p = s; p <= e; ++p) {
+    mineru::PageImage im = doc.render_page(p, dpi);
+    model_list.push_back(mineru::build_page_model(layout, det, im.rgb, im.width, im.height));
+    mineru::PipelinePageImage pg;
+    pg.page_w = (int)std::lround(im.width_pt);
+    pg.page_h = (int)std::lround(im.height_pt);
+    pg.w = im.width;
+    pg.h = im.height;
+    pg.rgb = std::move(im.rgb);
+    pages.push_back(std::move(pg));
+    std::cerr << "[mlx-mineru] page " << p << ": "
+              << model_list.back()["layout_dets"].size() << " dets\n";
+  }
+  json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, rec);
+
+  std::string stem = fs::path(pdf_path).stem().string();
+  fs::path dir = fs::path(out_dir) / stem / "pipeline";
+  fs::create_directories(dir);
+  std::string md =
+      mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
+  json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+  json middle = {{"pdf_info", pdf_info}, {"_backend", "pipeline"},
+                 {"_version_name", mineru::kMineruVersion}};
+  auto write = [&](const std::string& fn, const std::string& data) {
+    std::ofstream(dir / fn) << data;
+    std::cerr << "[mlx-mineru] wrote " << (dir / fn).string() << "\n";
+  };
+  write(stem + ".md", md);
+  write(stem + "_content_list.json", content_list.dump(4));
+  write(stem + "_middle.json", middle.dump(4));
+  std::cerr << "[mlx-mineru] pipeline inference " << secs(t_inf, Clock::now()) << "s; total "
+            << secs(t0, Clock::now()) << "s\n";
+  return 0;
+}
+#endif
+
 int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
-  std::string host = "127.0.0.1";
-  int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6;
+  std::string host = "127.0.0.1", backend = "vlm", pipeline_models = "models/pipeline";
+  int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6, pipeline_dpi = 200;
   bool layout_only = false, server = false;
+  app.add_option("-b,--backend", backend, "Backend: vlm (default) | pipeline (native ONNX CV)");
+  app.add_option("--pipeline-models", pipeline_models,
+                 "Pipeline backend model dir (default models/pipeline)");
+  app.add_option("--pipeline-dpi", pipeline_dpi, "Pipeline render DPI (default 200)");
   app.add_option("-p,--path", pdf_path, "Input PDF path (not needed with --server)");
   app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
   app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
@@ -400,6 +469,19 @@ int main(int argc, char** argv) {
   app.add_option("--bits", bits, "Weight quantization bits: 4 (default) / 8 / 0 (full bf16)");
   app.add_option("--batch", batch_size, "Block generation batch size (default 6; 1 = sequential)");
   CLI11_PARSE(app, argc, argv);
+
+  if (backend == "pipeline") {
+#ifdef MINERU_HAVE_PIPELINE
+    if (pdf_path.empty()) { std::cerr << "--path is required for the pipeline backend\n"; return 2; }
+    return run_pipeline(pdf_path, pipeline_models, out_dir, start_page, end_page, pipeline_dpi);
+#else
+    std::cerr << "pipeline backend not built (ONNX Runtime unavailable)\n";
+    return 2;
+#endif
+  } else if (backend != "vlm") {
+    std::cerr << "unknown backend '" << backend << "' (use vlm | pipeline)\n";
+    return 2;
+  }
 
   auto t0 = std::chrono::steady_clock::now();
   std::cerr << "[mlx-mineru] loading model (quantize " << (bits ? std::to_string(bits) + "-bit" : "off")

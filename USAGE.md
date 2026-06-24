@@ -92,7 +92,10 @@ mlx-mineru -p <file.pdf> [options]
 | Flag | Default | Description |
 |---|---|---|
 | `-p, --path <pdf>` | — | Input PDF (required unless `--server`) |
-| `-m, --model <dir>` | `models/MinerU2.5-tokenizer` | Model dir (weights + tokenizer) |
+| `-b, --backend <name>` | `vlm` | `vlm` (Qwen2-VL/MLX) or `pipeline` (native ONNX layout/OCR/formula/table) |
+| `--pipeline-models <dir>` | `models/pipeline` | Pipeline-backend model dir (Layout/OCR/MFR/TabRec) |
+| `--pipeline-dpi <n>` | `200` | Pipeline page render DPI |
+| `-m, --model <dir>` | `models/MinerU2.5-tokenizer` | VLM model dir (weights + tokenizer) |
 | `-s, --start <n>` | `0` | First page (0-based) |
 | `-e, --end <n>` | last | Last page (0-based, inclusive) |
 | `-o, --output <dir>` | `output` | Output directory |
@@ -106,8 +109,12 @@ mlx-mineru -p <file.pdf> [options]
 ### Examples
 
 ```bash
-# Whole PDF -> Markdown (+ content_list + middle json)
+# Whole PDF -> Markdown (+ content_list + middle json), VLM backend
 ./build/mlx-mineru -p paper.pdf -o output
+
+# Native pipeline backend (ONNX layout/OCR/formula/table, no VLM model needed)
+# -> <out>/<stem>/pipeline/<stem>.md + _content_list.json + _middle.json
+./build/mlx-mineru --backend pipeline -p paper.pdf -o output
 
 # Just pages 0..4
 ./build/mlx-mineru -p paper.pdf -s 0 -e 4 -o output

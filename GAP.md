@@ -71,16 +71,15 @@
 | content_list（v1/v2） | ✅ | ✅（renderer 一致；pipeline 图片抽取未接） |
 | 图片抽取落盘（cut_image_and_table） | ✅ | 🟡 VLM 路径有；pipeline 未接 |
 | OCR 多语言（~14 语，模型/字典各异） | ✅ | ❌ 仅 `ch`（ppocrv6） |
-| CLI `--backend pipeline` | ✅ | ❌ pipeline 仅以测试/驱动函数暴露 |
+| CLI `--backend pipeline` | ✅ | ✅ `mlx-mineru --backend pipeline -p a.pdf` 出 md/content_list/middle |
 | 验证语料广度 | 多类文档 | 🟡 仅 a.pdf（单栏数字 PDF，无表/公式/图/多栏） |
 
 ---
 
 ## 6. 建议（按投入产出排序）
 
-1. **接 CLI（`--backend pipeline`）** — 投入最小、收益最大。把已通的
-   `build_page_model`+`pipeline_assemble_pages`+`union_make` 接入 `main.cpp`，使
-   `mlx-mineru --backend pipeline a.pdf` 直接出 Markdown/middle_json/content_list。
+1. ~~**接 CLI（`--backend pipeline`）**~~ ✅ 已完成：`mlx-mineru --backend pipeline -p a.pdf`
+   直接出 Markdown/content_list/middle（整篇 a.pdf ~7s，无需 VLM 模型）。
 2. **可视块装配（image/table/formula 入 middle_json）** — 识别器（table_rec/formula_rec）
    已验证，缺的是把版面的 table/formula/image 块在装配阶段切图、调用识别器、写回
    span（`html`/`latex`/图片路径）。完成后表格与公式才会出现在 Markdown。

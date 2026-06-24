@@ -161,6 +161,13 @@ target_include_directories(mineru_vlm
   PRIVATE ${CMAKE_SOURCE_DIR}/src/vlm)
 target_link_libraries(mineru_vlm PUBLIC thirdparty_headers)
 
+# ---- Pipeline backend library (defined early so the CLI can link it) --------
+if(HAVE_ORT)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp)
+  target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
+  target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm mineru_core thirdparty_headers)
+endif()
+
 add_executable(test_tokenizer tests/test_tokenizer.cpp)
 target_include_directories(test_tokenizer PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(test_tokenizer PRIVATE mineru_vlm)
@@ -205,7 +212,14 @@ if(HAVE_MLX)
   if(HAVE_PDFIUM)
     add_executable(mlx-mineru src/cli/main.cpp)
     target_link_libraries(mlx-mineru PRIVATE mineru_qwen mineru_vlm mineru_pdf mineru_core)
-    set_target_properties(mlx-mineru PROPERTIES BUILD_RPATH "${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
+    set(MLX_MINERU_RPATH "${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
+    if(HAVE_ORT)
+      # Add the native pipeline backend (--backend pipeline) to the CLI.
+      target_link_libraries(mlx-mineru PRIVATE mineru_pipeline)
+      target_compile_definitions(mlx-mineru PRIVATE MINERU_HAVE_PIPELINE=1)
+      set(MLX_MINERU_RPATH "${MLX_MINERU_RPATH};${ORT_DIR}/lib")
+    endif()
+    set_target_properties(mlx-mineru PROPERTIES BUILD_RPATH "${MLX_MINERU_RPATH}")
   endif()
 
   set(MODEL_ST ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer/model.safetensors)
@@ -249,12 +263,8 @@ if(HAVE_ORT AND EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
     COMMAND test_onnx_smoke ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
 endif()
 
-# ---- Pipeline backend (ONNX Runtime models) ---------------------------------
+# ---- Pipeline backend tests (library defined earlier) -----------------------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp)
-  target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
-  target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm mineru_core thirdparty_headers)
-
   if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
     add_executable(test_layout_det tests/test_layout_det.cpp)
     target_include_directories(test_layout_det PRIVATE ${CMAKE_SOURCE_DIR}/tests)
