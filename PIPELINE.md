@@ -174,6 +174,15 @@ largest remaining task; it advances phase by phase with golden verification.
   region dets — **10/10 labels in correct reading order, boxes within 3px** (bicubic-resize
   variance). With this, C++ can produce the region half of the model_list; combining with the
   OCR-det `ocr_text` boxes yields a full from-scratch model_list (no MinerU dependency).
+- **P5 fully from-scratch pipeline ✅ (NO MinerU dependency)**: `build_page_model`
+  (`src/pipeline/pipeline_driver.cpp`) renders a page and builds the model_list in C++ —
+  PP-DocLayoutV2 regions (reading-ordered) + OCR-det `ocr_text` boxes. `ctest
+  pipeline_scratch` runs the **entire native chain** for a.pdf p0: render → layout + OCR det
+  → model_list (29 dets) → assemble → post-OCR text-fill → union_make → Markdown, with
+  correct headings/paragraphs **ASCII-exact vs MinerU**. The pipeline backend is now
+  end-to-end native (Python-free): PDF in, Markdown out, every stage checked against MinerU.
+  Remaining polish: digital-PDF `pdftext` text path (byte-exact CJK for text-layer PDFs),
+  visual spans (image/table/formula blocks), UNet wired-tables, multi-page CLI wiring.
 - **Also queued**: UNet wired-table structure; digital-PDF text extraction (pdftext) for
   text-layer PDFs; visual-span path (image/table/formula) in the assembly; para_split
   cross-block merging for multi-block paragraphs.

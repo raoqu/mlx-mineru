@@ -345,6 +345,16 @@ if(HAVE_ORT)
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/a.pdf)
+
+    if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx AND
+       EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx)
+      add_executable(test_pipeline_scratch tests/test_pipeline_scratch.cpp)
+      target_include_directories(test_pipeline_scratch PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+      target_link_libraries(test_pipeline_scratch PRIVATE mineru_pipeline mineru_core mineru_pdf)
+      set_target_properties(test_pipeline_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
+      add_test(NAME pipeline_scratch COMMAND test_pipeline_scratch ${CMAKE_SOURCE_DIR}/tests/golden
+                ${CMAKE_SOURCE_DIR}/models/pipeline ${CMAKE_SOURCE_DIR}/a.pdf)
+    endif()
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/mfr.json AND
