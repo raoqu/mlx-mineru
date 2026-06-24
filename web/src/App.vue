@@ -12,6 +12,16 @@ const backend = ref('hybrid-engine')
 const backends = ref(ALL_BACKENDS)
 const maxPages = ref(1000)
 const showAdvanced = ref(false)
+// Advanced options (aligned with MinerU's gradio demo).
+const tableEnable = ref(true)
+const formulaEnable = ref(true)
+const imageAnalysis = ref(true)
+const hybridEffort = ref('medium')
+const lang = ref('ch')
+const isOcr = ref(false)
+const isPipeline = computed(() => backend.value === 'pipeline')
+const isHybrid = computed(() => backend.value === 'hybrid-engine')
+const isVlmish = computed(() => backend.value === 'vlm' || backend.value === 'hybrid-engine')
 const converting = ref(false)
 const error = ref('')
 const tab = ref('render')        // render | text | json
@@ -70,6 +80,12 @@ async function convert() {
     fd.append('files', file.value)
     fd.append('max_pages', String(maxPages.value))
     fd.append('backend', backend.value)
+    fd.append('table_enable', tableEnable.value ? 'true' : 'false')
+    fd.append('formula_enable', formulaEnable.value ? 'true' : 'false')
+    fd.append('image_analysis', imageAnalysis.value ? 'true' : 'false')
+    fd.append('is_ocr', isOcr.value ? 'true' : 'false')
+    fd.append('lang', lang.value)
+    fd.append('effort', hybridEffort.value)
     setStep(3, 'done'); setStep(4, 'active')
     const r = await fetch('/file_parse', { method: 'POST', body: fd })
     setStep(4, 'done'); setStep(5, 'active')
@@ -151,7 +167,25 @@ function copy(text) { navigator.clipboard?.writeText(text) }
         </div>
 
         <button class="adv" @click="showAdvanced = !showAdvanced">高级选项 {{ showAdvanced ? '▲' : '▼' }}</button>
-        <div v-if="showAdvanced" class="adv-body muted small">原生引擎参数（公式/表格识别默认开启）。</div>
+        <div v-if="showAdvanced" class="adv-body">
+          <label class="opt"><input type="checkbox" v-model="tableEnable" /> 表格识别</label>
+          <label class="opt"><input type="checkbox" v-model="formulaEnable" /> 公式识别</label>
+          <label v-if="isVlmish" class="opt"><input type="checkbox" v-model="imageAnalysis" /> 图像/图表理解</label>
+          <label v-if="isPipeline" class="opt"><input type="checkbox" v-model="isOcr" /> 强制 OCR（忽略 PDF 文本层）</label>
+          <div v-if="isPipeline" class="opt-field">
+            <span class="muted small">OCR 语言</span>
+            <select v-model="lang">
+              <option value="ch">中文 (ch)</option>
+              <option value="en">English (en)</option>
+            </select>
+            <span class="muted small">其他语言需额外模型</span>
+          </div>
+          <div v-if="isHybrid" class="opt-field">
+            <span class="muted small">混合 effort</span>
+            <label class="radio"><input type="radio" value="medium" v-model="hybridEffort" /> medium</label>
+            <label class="radio"><input type="radio" value="high" v-model="hybridEffort" /> high</label>
+          </div>
+        </div>
 
         <div class="btn-row">
           <button class="primary" :disabled="!file || converting" @click="convert">

@@ -352,7 +352,7 @@ static json convert_batched(const mineru::Qwen2VLModel& model, const mineru::Qwe
 // Convert an open PDF document (page range) -> pdf_info (middle_json pages).
 static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
                              mineru::PdfDocument& doc, int start_page, int end_page,
-                             const std::string& images_dir = "") {
+                             const std::string& images_dir = "", bool skip_image_rec = false) {
   int npages = doc.page_count();
   int s = std::clamp(start_page, 0, npages - 1);
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
@@ -362,12 +362,25 @@ static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qw
     pages.push_back(doc.render_page(p));
     idxs.push_back(p);
   }
-  return convert_batched(model, tok, pages, idxs, images_dir, /*batch_size=*/6);
+  return convert_batched(model, tok, pages, idxs, images_dir, /*batch_size=*/6, skip_image_rec);
 }
 
-// PDF bytes + max page count + chosen backend -> {md_content, content_list}. The dispatch
-// picks/lazy-loads the backend at request time (so --web isn't bound to one --backend).
-using ConvertFn = std::function<json(const std::vector<uint8_t>&, int, const std::string&)>;
+// Advanced options (mirrors MinerU's gradio: table_enable, formula_enable, image_analysis,
+// hybrid_effort, language, is_ocr). Defaults match the source (all enabled).
+struct ConvertOpts {
+  std::string backend = "vlm";
+  int max_pages = -1;
+  bool formula_enable = true;   // recognize formulas (pipeline MFR; vlm/union_make rendering)
+  bool table_enable = true;     // recognize tables (pipeline SLANet+; vlm/union_make rendering)
+  bool image_analysis = true;   // vlm/hybrid: understand image/chart crops (else skip)
+  bool is_ocr = false;          // pipeline: force OCR (ignore the embedded text layer)
+  std::string lang = "ch";      // pipeline OCR language (only the bundled ch/en model ships)
+  std::string effort = "medium";  // hybrid effort (medium|high)
+};
+
+// PDF bytes + options -> {md_content, content_list}. The dispatch picks/lazy-loads the
+// backend at request time (so --web isn't bound to one --backend).
+using ConvertFn = std::function<json(const std::vector<uint8_t>&, const ConvertOpts&)>;
 
 // HTTP API + (optional) embedded web UI. GET /health, GET /info, POST /file_parse
 // (raw PDF body or multipart "files"; optional form fields max_pages/backend);
@@ -388,32 +401,41 @@ static int run_web_server(const ConvertFn& convert, const std::vector<std::strin
   });
 
   srv.Post("/file_parse", [&](const httplib::Request& req, httplib::Response& res) {
-    std::string pdf, backend = default_backend;
-    int max_pages = -1;
-    if (req.is_multipart_form_data()) {
-      if (req.form.has_file("files")) pdf = req.form.get_file("files").content;
-      if (req.form.has_field("max_pages")) {
-        try { max_pages = std::stoi(req.form.get_field("max_pages")); } catch (...) {}
-      }
-      if (req.form.has_field("backend")) backend = req.form.get_field("backend");
-    } else {
+    std::string pdf;
+    ConvertOpts opt;
+    opt.backend = default_backend;
+    auto get = [&](const char* k, std::string& v) {
+      if (req.is_multipart_form_data()) { if (req.form.has_field(k)) v = req.form.get_field(k); }
+      else if (req.has_param(k)) v = req.get_param_value(k);
+    };
+    auto truthy = [](const std::string& s) { return s == "1" || s == "true" || s == "on"; };
+    if (req.is_multipart_form_data() && req.form.has_file("files"))
+      pdf = req.form.get_file("files").content;
+    else if (!req.is_multipart_form_data())
       pdf = req.body;
-      if (req.has_param("backend")) backend = req.get_param_value("backend");
-    }
+    std::string s;
+    get("backend", opt.backend);
+    s.clear(); get("max_pages", s); if (!s.empty()) try { opt.max_pages = std::stoi(s); } catch (...) {}
+    s = "true"; get("formula_enable", s); opt.formula_enable = truthy(s);
+    s = "true"; get("table_enable", s); opt.table_enable = truthy(s);
+    s = "true"; get("image_analysis", s); opt.image_analysis = truthy(s);
+    s = "false"; get("is_ocr", s); opt.is_ocr = truthy(s);
+    get("lang", opt.lang);
+    get("effort", opt.effort);
     if (pdf.size() < 5 || pdf.compare(0, 5, "%PDF-") != 0) {
       res.status = 400;
       res.set_content("{\"error\":\"expected a PDF body or multipart 'files'\"}", "application/json");
       return;
     }
-    if (std::find(backends.begin(), backends.end(), backend) == backends.end()) {
+    if (std::find(backends.begin(), backends.end(), opt.backend) == backends.end()) {
       res.status = 400;
-      res.set_content("{\"error\":\"unknown backend '" + backend + "'\"}", "application/json");
+      res.set_content("{\"error\":\"unknown backend '" + opt.backend + "'\"}", "application/json");
       return;
     }
     try {
       std::lock_guard<std::mutex> lock(infer_mtx);
       std::vector<uint8_t> bytes(pdf.begin(), pdf.end());
-      json out = convert(bytes, max_pages, backend);
+      json out = convert(bytes, opt);
       res.set_content(out.dump(), "application/json");
     } catch (const std::exception& ex) {
       res.status = 500;
@@ -598,9 +620,14 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
         mineru::Qwen2VLModel::load(model_dir + "/model.safetensors", cfg));
   };
   // Empty bucket: image_path values are full base64 data URIs, used verbatim by union_make.
-  auto to_out = [](const json& pdf_info) {
-    std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "").get<std::string>();
-    json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "");
+  // formula_enable/table_enable gate how formulas/tables render (latex/html vs image), like
+  // MinerU's MINERU_*_ENABLE env vars consumed by union_make.
+  auto to_out = [](const json& pdf_info, const ConvertOpts& o) {
+    using mineru::make_mode::kContentList;
+    using mineru::make_mode::kMmMd;
+    std::string md = mineru::union_make(pdf_info, kMmMd, "", o.formula_enable, o.table_enable)
+                         .get<std::string>();
+    json cl = mineru::union_make(pdf_info, kContentList, "", o.formula_enable, o.table_enable);
     return json{{"md_content", md}, {"content_list", cl}};
   };
 
@@ -617,38 +644,40 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
   if (have_pl) { backends = {"hybrid-engine", "pipeline", "vlm"}; default_backend = "hybrid-engine"; }
 #endif
 
-  ConvertFn convert = [&](const std::vector<uint8_t>& bytes, int max_pages,
-                          const std::string& backend) -> json {
+  ConvertFn convert = [&](const std::vector<uint8_t>& bytes, const ConvertOpts& o) -> json {
     mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
     int np = doc.page_count();
-    int e = (max_pages > 0) ? std::min(np, max_pages) - 1 : np - 1;
+    int e = (o.max_pages > 0) ? std::min(np, o.max_pages) - 1 : np - 1;
 #ifdef MINERU_HAVE_PIPELINE
-    if (backend == "pipeline" || backend == "hybrid-engine") {
+    if (o.backend == "pipeline" || o.backend == "hybrid-engine") {
       ensure_pl();
-      // Render + build + assemble, keeping page images for the (hybrid) VLM image fill.
+      // Honor table_enable / formula_enable by withholding those recognizers.
+      mineru::FormulaRecognizer* mfr = o.formula_enable ? pl->mfr.get() : nullptr;
+      mineru::OcrPipeline* tocr = o.table_enable ? pl->table_ocr.get() : nullptr;
+      mineru::TableRecognizer* trec = o.table_enable ? pl->table_rec.get() : nullptr;
       json model_list = json::array();
       std::vector<mineru::PipelinePageImage> pages;
       std::vector<std::pair<int, int>> dims;  // (w,h) per page for cropping
       for (int p = 0; p <= e; ++p) {
         mineru::PageImage im = doc.render_page(p, dpi);
         model_list.push_back(mineru::build_page_model(*pl->layout, *pl->det, im.rgb, im.width,
-                                                      im.height, pl->mfr.get(), pl->table_ocr.get(),
-                                                      pl->table_rec.get()));
+                                                      im.height, mfr, tocr, trec));
         mineru::PipelinePageImage pg;
         pg.page_w = (int)std::lround(im.width_pt);
         pg.page_h = (int)std::lround(im.height_pt);
         pg.w = im.width; pg.h = im.height;
         dims.push_back({im.width, im.height});
         pg.rgb = im.rgb;  // keep a copy for hybrid VLM crops
-        for (const mineru::PdfChar& c : doc.extract_chars(p))
-          pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
+        if (!o.is_ocr)  // is_ocr forces OCR (ignore the embedded text layer)
+          for (const mineru::PdfChar& c : doc.extract_chars(p))
+            pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
         pages.push_back(std::move(pg));
       }
       json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pl->rec);
       // Inline image/chart crops as base64 data URIs so they render in the UI; in hybrid
-      // mode also fill the span content via the VLM (image/chart understanding).
-      bool hybrid = (backend == "hybrid-engine");
-      if (hybrid) ensure_vlm();
+      // mode also fill the span content via the VLM (when image_analysis is on).
+      bool hybrid = (o.backend == "hybrid-engine");
+      if (hybrid && o.image_analysis) ensure_vlm();
       for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
         double scale = pages[p].page_w > 0 ? (double)dims[p].first / pages[p].page_w : 1.0;
         for (auto& blk : pdf_info[p]["para_blocks"]) {
@@ -663,15 +692,17 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
                                         scale, cw, ch);
                 if (cw <= 0 || ch <= 0) continue;
                 sp["image_path"] = jpg_data_uri(crop, cw, ch);
-                if (hybrid) sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
+                if (hybrid && o.image_analysis)
+                  sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
               }
         }
       }
-      return to_out(pdf_info);
+      return to_out(pdf_info, o);
     }
 #endif
     ensure_vlm();
-    return to_out(convert_document(*vmodel, *vtok, doc, 0, e, /*images_dir=*/"@inline"));
+    // image_analysis off -> skip image/chart understanding (still inline the crop).
+    return to_out(convert_document(*vmodel, *vtok, doc, 0, e, "@inline", !o.image_analysis), o);
   };
 
   return run_web_server(convert, backends, default_backend, host, port, serve_ui);
