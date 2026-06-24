@@ -95,11 +95,21 @@
      table_caption、vision_footnote→table_footnote 关联到表格，产出两层
      `[table_caption, table_body, table_footnote]`（demo1 p5 嵌套与 MinerU 完全一致）；
      post-OCR/数字取字递归填充嵌套块内文本。
-   **剩余**：有线表 UNet、image 块、inline_formula 内联 span、cut_image 落盘。
+   - 有线表 UNet：✅ 见上方"有线表格结构（UNet）"行（5 阶段端到端与 MinerU 逐字一致）。
+   **剩余**：image 块、inline_formula 内联 span、cut_image 落盘。
 3. **para_split 完整逻辑** — list/index 检测与跨块合并，显著提升列表/多行段落的 Markdown 质量。
-4. **数字 PDF 取字路径（pdftext）** — 对"带文本层"的常见 PDF 做到字节级一致（含 CJK 码位）；
-   当前 OCR 路径语义正确但码位为 CJK 统一汉字而非源 PDF 的兼容码位。工作量较大但价值高。
-5. **有线表格 UNet + 表格方向分类** — 补齐表格另一半（有线表）。
+4. **数字 PDF 取字路径（pdftext）** — ✅ 已接通（`extract_chars`+`fill_chars_in_page`，a.pdf
+   p0 与 MinerU 19/19 部首等价）。残差仅康熙部首↔统一汉字码位，源于 vendored pdfium 与
+   pypdfium2 版本差异（NFKC 等价），非逻辑问题。
+5. ~~有线表格 UNet~~ ✅ 已完成（链接真实 OpenCV，逐位一致）。表格方向分类已有 TableClassifier。
+
+### 精度说明（依"优先用三方库源码"指引）
+管线的 resize / 形态学 / 连通域 / minAreaRect / fillPoly / findContours 等已改为直接调用
+真实 **OpenCV 4.13.0**（与 MinerU 同一 cv2），OCR det 框、UNet 分割/单元格/逻辑网格/HTML、
+表格预处理均与 MinerU **逐位一致**；ocr_page 文本 19/19 完全一致。**已知残差**（均为上游
+三方库"版本差异"，非自实现方差，输出影响可忽略）：(a) DB unclip 的 pyclipper 整数化使
+3/19 框坐标差 ≤1px（不影响任何文字/HTML）；(b) vendored pdfium 与 pypdfium2 渲染/取码的
+亚像素差异，偶尔翻转一个高度歧义字形（script U）或给出 CJK 统一汉字而非兼容码位。
 6. **版面启发式过滤层** — 复杂/重叠版面的鲁棒性（框抑制、公式去重、重排）。
 7. **广度类（次优先）** — 多语言 OCR、图片输入、Office/hybrid 后端。
 
