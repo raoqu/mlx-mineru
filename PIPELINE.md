@@ -30,7 +30,7 @@ page img → [Layout] regions(bbox,type,reading-order)
 - **P1 — Layout**: `layout.onnx` + C++ preprocess (resize 800×800, /255, NCHW) +
   postprocess (per-class thresholds, box scale to page, reading-order decode).
   Golden: Python `PPDocLayoutV2.predict` on demo pages.
-- **P2 — Table**: TabCls (wired/simple) → SLANet+ (structure) / UNet; OTSL/HTML
+- **P2 — Table** (TabCls ✅): TabCls (wired/simple) → SLANet+ (structure) / UNet; OTSL/HTML
   reuse where possible. Golden: Python table rec on cropped tables.
 - **P3 — OCR**: DBNet detection (→ text-line boxes, DB postprocess) + CTC rec
   (→ text, CTC greedy decode + dict). Golden: Python OCR on text crops.
@@ -59,6 +59,11 @@ largest remaining task; it advances phase by phase with golden verification.
   onnxruntime inference + core post-process (box decode -> scale -> sigmoid ->
   topk -> conf>=0.45 -> clip). `ctest layout_det` matches the Python core golden
   EXACTLY (same labels/boxes/scores on a real page). New `mineru_pipeline` lib.
-- **Next**: MinerU heuristic filters layer (IoU-0.9 dedup, formula merge/relabel,
-  header/footer relabel, paddlex filter) + reading-order decode; then wire layout
-  -> per-region OCR/table/formula -> middle_json. Then P2 (table, already ONNX).
+- **P2 TabCls ✅**: `TableClassifier` (`src/pipeline/table_cls.cpp`) — bilinear
+  resize-256 + center-crop-224 + ImageNet-normalize + ONNX; `ctest tab_cls`
+  matches a Python golden (same algorithm) exactly. Added reusable
+  `resize_bilinear_rgb8`. (cv2 fixed-point bilinear approximated by float bilinear;
+  doesn't flip the class.)
+- **Next**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
+  layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
+  assembly (P5).

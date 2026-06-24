@@ -1,0 +1,72 @@
+// Copyright (c) mlx-mineru.
+#include "mineru/table_cls.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+
+#include "mineru/image_preprocess.hpp"  // resize_bilinear_rgb8
+#include "onnxruntime_cxx_api.h"
+
+namespace mineru {
+
+struct TableClassifier::Impl {
+  Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-tabcls"};
+  Ort::SessionOptions opts;
+  std::unique_ptr<Ort::Session> session;
+  std::string in_name, out_name;
+};
+
+TableClassifier::TableClassifier() : impl_(std::make_unique<Impl>()) {}
+TableClassifier::~TableClassifier() = default;
+TableClassifier::TableClassifier(TableClassifier&&) noexcept = default;
+TableClassifier& TableClassifier::operator=(TableClassifier&&) noexcept = default;
+
+TableClassifier TableClassifier::load(const std::string& onnx_path) {
+  TableClassifier c;
+  Impl& m = *c.impl_;
+  m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
+  Ort::AllocatorWithDefaultOptions alloc;
+  m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
+  m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  return c;
+}
+
+TableClsResult TableClassifier::classify(const std::vector<uint8_t>& rgb, int w, int h) const {
+  const Impl& m = *impl_;
+  // resize shortest edge -> 256 (bilinear), center-crop 224, ImageNet-normalize, CHW.
+  double scale = 256.0 / std::min(h, w);
+  int rw = static_cast<int>(std::lround(w * scale)), rh = static_cast<int>(std::lround(h * scale));
+  std::vector<uint8_t> r = resize_bilinear_rgb8(rgb, w, h, rw, rh);
+  const int cw = 224, ch = 224;
+  int x1 = std::max(0, (rw - cw) / 2), y1 = std::max(0, (rh - ch) / 2);
+  if (rw < cw || rh < ch) throw std::runtime_error("table_cls: crop smaller than 224");
+
+  static const float mean[3] = {0.485f, 0.456f, 0.406f};
+  static const float std_[3] = {0.229f, 0.224f, 0.225f};
+  std::vector<float> input(static_cast<size_t>(3) * ch * cw);
+  for (int y = 0; y < ch; ++y)
+    for (int x = 0; x < cw; ++x)
+      for (int c = 0; c < 3; ++c) {
+        uint8_t p = r[(static_cast<size_t>(y1 + y) * rw + (x1 + x)) * 3 + c];
+        input[(static_cast<size_t>(c) * ch + y) * cw + x] = (p / 255.0f - mean[c]) / std_[c];
+      }
+
+  std::array<int64_t, 4> ishape{1, 3, ch, cw};
+  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
+  const char* in_names[] = {m.in_name.c_str()};
+  const char* out_names[] = {m.out_name.c_str()};
+  auto outs =
+      const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 1);
+  const float* p = outs[0].GetTensorData<float>();
+
+  TableClsResult res;
+  res.probs = {p[0], p[1]};
+  res.cls_id = (p[1] > p[0]) ? 1 : 0;
+  res.score = p[res.cls_id];
+  res.label = res.cls_id == 0 ? "wired_table" : "wireless_table";
+  return res;
+}
+
+}  // namespace mineru

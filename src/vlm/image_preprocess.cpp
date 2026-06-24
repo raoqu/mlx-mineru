@@ -130,6 +130,35 @@ std::vector<uint8_t> resize_bicubic_rgb8(const std::vector<uint8_t>& rgb, int in
   return out;
 }
 
+std::vector<uint8_t> resize_bilinear_rgb8(const std::vector<uint8_t>& rgb, int in_w, int in_h,
+                                          int out_w, int out_h) {
+  std::vector<uint8_t> out(static_cast<size_t>(out_w) * out_h * 3);
+  double sx = static_cast<double>(in_w) / out_w, sy = static_cast<double>(in_h) / out_h;
+  auto px = [&](int y, int x, int c) -> double {
+    return rgb[(static_cast<size_t>(y) * in_w + x) * 3 + c];
+  };
+  for (int dy = 0; dy < out_h; ++dy) {
+    double fy = (dy + 0.5) * sy - 0.5;
+    int y0 = static_cast<int>(std::floor(fy));
+    double wy = fy - y0;
+    int y0c = std::max(0, std::min(in_h - 1, y0)), y1c = std::max(0, std::min(in_h - 1, y0 + 1));
+    for (int dx = 0; dx < out_w; ++dx) {
+      double fx = (dx + 0.5) * sx - 0.5;
+      int x0 = static_cast<int>(std::floor(fx));
+      double wx = fx - x0;
+      int x0c = std::max(0, std::min(in_w - 1, x0)), x1c = std::max(0, std::min(in_w - 1, x0 + 1));
+      uint8_t* o = out.data() + (static_cast<size_t>(dy) * out_w + dx) * 3;
+      for (int c = 0; c < 3; ++c) {
+        double top = (1 - wx) * px(y0c, x0c, c) + wx * px(y0c, x1c, c);
+        double bot = (1 - wx) * px(y1c, x0c, c) + wx * px(y1c, x1c, c);
+        double v = (1 - wy) * top + wy * bot;
+        o[c] = static_cast<uint8_t>(std::max(0.0, std::min(255.0, v + 0.5)));
+      }
+    }
+  }
+  return out;
+}
+
 std::array<int, 2> smart_resize(int height, int width, int factor, int min_pixels, int max_pixels) {
   if (std::max(height, width) / static_cast<double>(std::min(height, width)) > 200.0)
     throw std::runtime_error("smart_resize: aspect ratio must be < 200");

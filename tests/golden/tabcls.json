@@ -1,0 +1,11 @@
+{
+  "input": "layout_input.rgb",
+  "size": 800,
+  "label": "wireless_table",
+  "cls_id": 1,
+  "score": 0.94103,
+  "probs": [
+    0.05897,
+    0.94103
+  ]
+}

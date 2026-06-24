@@ -39,4 +39,9 @@ VisionInput preprocess_image(const std::vector<uint8_t>& rgb, int width, int hei
 std::vector<uint8_t> resize_bicubic_rgb8(const std::vector<uint8_t>& rgb, int in_w, int in_h,
                                          int out_w, int out_h);
 
+// Bilinear resize, half-pixel-center mapping (cv2 INTER_LINEAR convention; float
+// path, not cv2's fixed-point — used by the pipeline OCR/table preprocessing).
+std::vector<uint8_t> resize_bilinear_rgb8(const std::vector<uint8_t>& rgb, int in_w, int in_h,
+                                          int out_w, int out_h);
+
 }  // namespace mineru
