@@ -69,9 +69,13 @@ largest remaining task; it advances phase by phase with golden verification.
   pytorchocr BaseOCRV20 + arch_config.yaml + RepVGG reparameterization (avoids the
   cv2/shapely/pyclipper deps the full import needs). torch-vs-onnxruntime:
   det 3.9e-5, rec 7.9e-5. Dict ppocrv6_dict.txt (18709 chars) copied.
+- **P3 OCR rec ✅**: `TextRecognizer` (`src/pipeline/ocr_rec.cpp`) — bilinear
+  resize-to-H48 + /127.5-1 pad + ocr_rec.onnx + CTC greedy decode (drop blank,
+  collapse repeats) + 18710-char dict. `ctest ocr_rec` reads real Chinese from an
+  a.pdf line ("3. 了解组织行为学学科体系...") matching the Python golden exactly.
 - **Next OCR (C++)**: det preprocess (resize /32, normalize) + DB post-process
-  (sigmoid -> threshold -> contours -> unclip -> boxes); rec preprocess (H=48) +
-  CTC greedy decode + dict. (DB contours/unclip is the heavy part.)
+  (sigmoid -> threshold -> contours -> unclip -> boxes) to get the text-line boxes
+  that feed rec. (DB contours/unclip is the heavy part.)
 - **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
   layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
   assembly (P5).

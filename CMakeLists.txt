@@ -242,7 +242,7 @@ endif()
 
 # ---- Pipeline backend (ONNX Runtime models) ---------------------------------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp)
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm thirdparty_headers)
 
@@ -263,6 +263,17 @@ if(HAVE_ORT)
     set_target_properties(test_tab_cls PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME tab_cls
       COMMAND test_tab_cls ${CMAKE_SOURCE_DIR}/models/pipeline/TabCls/PP-LCNet_x1_0_table_cls.onnx
+              ${CMAKE_SOURCE_DIR}/tests/golden)
+  endif()
+
+  if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx)
+    add_executable(test_ocr_rec tests/test_ocr_rec.cpp)
+    target_include_directories(test_ocr_rec PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_ocr_rec PRIVATE mineru_pipeline)
+    set_target_properties(test_ocr_rec PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
+    add_test(NAME ocr_rec
+      COMMAND test_ocr_rec ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/tests/golden)
   endif()
 endif()
