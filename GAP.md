@@ -45,7 +45,7 @@
 | 从零生成 model_list（无 MinerU 依赖） | ✅ | ✅ | render→layout+OCR det→md 精确 |
 | **数字 PDF 取字（pdftext / fill_char_in_spans）** | ✅ | ✅ | `PdfDocument::extract_chars`（pdfium loose char box）+ `fill_chars_in_page`（calculate_char_in_span + chars_to_content）；driver/CLI 有嵌入文本则走数字路径、否则 OCR，空 span 回落 OCR。a.pdf p0 与 MinerU **19/19 部首等价**（结构/间距/标点一致；仅康熙部首↔统一汉字码位差，源于 vendored pdfium 与 pypdfium2 版本差异，二者 NFKC 等价） |
 | **可视块装配**（image/table/formula → span/块） | ✅ | ❌ | 识别器已就绪，但未接入 `__build_page_blocks`/`cut_image_and_table` |
-| **有线表格结构（UNet）** | ✅ | ❌ | 仅无线 SLANet+ |
+| **有线表格结构（UNet）** | ✅ | 🟡 进行中 | Stage 1 推理（preprocess+unet.onnx→线分割，与 MinerU 差 0.79% 边界像素）✅；Stage 2 线提取→单元格多边形（形态学闭运算 + 连通域 + minAreaRect + 画线 + 取非线连通域为单元格；4×4 表 16/16 格与 MinerU 网格 ≤3px 一致）✅。**剩余**：Stage 2 线延长（adjust_lines/final_adjust_lines，产生边缘细条格使总数与 MinerU 的 19 一致）、Stage 3 TableRecover（单元格→逻辑行列网格 logi_points）、Stage 4 plot_html_table、Stage 5 OCR-单元格匹配 |
 | **表格方向分类（TableOrientationCls）** | ✅ | ❌ | — |
 | **行内公式 mask（OCR det 前遮挡）** | ✅ | ❌ | `mask_formula_regions_for_ocr_det` |
 | **版面启发式过滤层**（框抑制/公式去重/重排 ~500 行） | ✅ | 🟡 | 简单单栏可行；复杂重叠版面未覆盖 |
