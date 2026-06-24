@@ -87,8 +87,11 @@
      MinerU 逐字一致 2/2）；`build_page_model` 切图→逐块 OCR→SLANet+ 写回 html（去
      `<html><body>` 壳），CLI 接 OcrPipeline+TableRecognizer，`<table>` 已入 Markdown
      （从零 1/2 与 MinerU 完全一致，另一张结构因 crop/OCR 方差略异）。
+   - formula_number `\tag{N}`：✅ `optimize_formula_numbers` 把编号块与相邻行间公式合并
+     （编号经 OCR → 去括号 → `\tag{N}`，未匹配降级为 text），driver 在 text-fill 后调用，
+     demo1 p2 输出 `\tag{1}`/`\tag{2}`。
    **剩余**：table 的 caption/footnote 嵌套（`find_best_visual_parent`）、有线表 UNet、
-   image 块、inline_formula 内联 span、formula_number 的 `\tag{N}`、cut_image 落盘。
+   image 块、inline_formula 内联 span、cut_image 落盘。
 3. **para_split 完整逻辑** — list/index 检测与跨块合并，显著提升列表/多行段落的 Markdown 质量。
 4. **数字 PDF 取字路径（pdftext）** — 对"带文本层"的常见 PDF 做到字节级一致（含 CJK 码位）；
    当前 OCR 路径语义正确但码位为 CJK 统一汉字而非源 PDF 的兼容码位。工作量较大但价值高。

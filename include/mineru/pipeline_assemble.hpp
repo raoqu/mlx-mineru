@@ -17,4 +17,10 @@ namespace mineru {
 nlohmann::json assemble_page_info(const nlohmann::json& model_page, int page_w, int page_h,
                                   int page_idx);
 
+// optimize_formula_number_blocks: associate each formula_number block with an adjacent
+// interline_equation, append \tag{N} (N = the number's OCR text), and drop the merged
+// formula_number; unmatched formula_number blocks downgrade to text. Mutates `blocks` (a
+// preproc_blocks/para_blocks array) in place. Run after post-OCR text-fill.
+void optimize_formula_numbers(nlohmann::json& blocks);
+
 }  // namespace mineru

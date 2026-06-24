@@ -210,4 +210,76 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
           {"discarded_blocks", discarded}, {"para_blocks", para}};
 }
 
+// ---- formula_number -> \tag{N} association (optimize_formula_number_blocks) ----
+namespace {
+std::string strip_ws(const std::string& s) {
+  size_t a = s.find_first_not_of(" \t\r\n");
+  if (a == std::string::npos) return "";
+  size_t b = s.find_last_not_of(" \t\r\n");
+  return s.substr(a, b - a + 1);
+}
+// extract_formula_number_text: concat the block's text-span contents.
+std::string fn_text(const json& block) {
+  std::string t;
+  for (const auto& ln : block.value("lines", json::array()))
+    for (const auto& sp : ln.value("spans", json::array()))
+      if (sp.value("type", "") == "text") t += sp.value("content", "");
+  return strip_ws(t);
+}
+// normalize_formula_tag_content: strip whitespace + a single outer pair of (full/half)
+// parentheses around the number.
+std::string normalize_tag(std::string s) {
+  s = strip_ws(s);
+  auto starts = [&](const char* p) { return s.rfind(p, 0) == 0; };
+  auto ends = [&](const char* p) {
+    size_t n = std::string(p).size();
+    return s.size() >= n && s.compare(s.size() - n, n, p) == 0;
+  };
+  if (starts("(")) s = strip_ws(s.substr(1));
+  else if (starts("\xEF\xBC\x88")) s = strip_ws(s.substr(3));  // U+FF08 （
+  if (ends(")")) s = strip_ws(s.substr(0, s.size() - 1));
+  else if (ends("\xEF\xBC\x89")) s = strip_ws(s.substr(0, s.size() - 3));  // U+FF09 ）
+  return s;
+}
+// append_formula_number_tag: write \tag{N} into the equation block's interline span.
+bool append_tag(json& eq_block, const json& fn_block) {
+  for (auto& ln : eq_block["lines"])
+    for (auto& sp : ln["spans"])
+      if (sp.value("type", "") == "interline_equation") {
+        std::string content = sp.value("content", "");
+        if (strip_ws(content).empty()) return false;
+        sp["content"] = content + "\\tag{" + normalize_tag(fn_text(fn_block)) + "}";
+        return true;
+      }
+  return false;
+}
+bool is_eq(const json& b) { return b.value("type", "") == "interline_equation"; }
+bool is_fn(const json& b) { return b.value("type", "") == "formula_number"; }
+}  // namespace
+
+void optimize_formula_numbers(json& blocks) {
+  json out = json::array();
+  int n = (int)blocks.size();
+  for (int i = 0; i < n; ++i) {
+    if (!is_fn(blocks[i])) { out.push_back(blocks[i]); continue; }
+    // prev block is an equation -> append tag to it (already in `out`), drop this.
+    if (i > 0 && !out.empty() && is_eq(out.back())) {
+      if (append_tag(out.back(), blocks[i])) continue;
+      blocks[i]["type"] = "text";
+      out.push_back(blocks[i]);
+      continue;
+    }
+    // next is an equation (and the one after isn't another formula_number) -> tag it.
+    if (i + 1 < n && is_eq(blocks[i + 1]) && (i + 2 >= n || !is_fn(blocks[i + 2]))) {
+      if (append_tag(blocks[i + 1], blocks[i])) continue;  // tagged when pushed next iter
+      blocks[i]["type"] = "text";
+      out.push_back(blocks[i]);
+      continue;
+    }
+    blocks[i]["type"] = "text";  // unmatched -> downgrade
+    out.push_back(blocks[i]);
+  }
+  blocks = std::move(out);
+}
+
 }  // namespace mineru

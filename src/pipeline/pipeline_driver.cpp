@@ -79,6 +79,10 @@ nlohmann::json pipeline_assemble_pages(const nlohmann::json& model_list,
     nlohmann::json page_info = assemble_page_info(model_list[i], pg.page_w, pg.page_h, (int)i);
     double scale = pg.page_w > 0 ? (double)pg.w / pg.page_w : 1.0;
     fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec);
+    // formula_number -> \tag{N} after the numbers are OCR-filled (both block lists, since
+    // our assembly materializes para_blocks independently).
+    optimize_formula_numbers(page_info["preproc_blocks"]);
+    optimize_formula_numbers(page_info["para_blocks"]);
     pdf_info.push_back(std::move(page_info));
   }
   return pdf_info;
