@@ -2,6 +2,9 @@
 // Pipeline P2 (wired tables) — Stage 1: WiredTableRecognizer::segment == MinerU TSRUnet
 // (preprocess + unet.onnx -> line segmentation). Compares the 0/1/2 seg map against the
 // golden, allowing a small fraction of boundary pixels to differ (bicubic-resize LSB).
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -51,5 +54,35 @@ int main(int argc, char** argv) {
             << line_diff << " involve line pixels\n";
   // The seg is argmax; near-boundary line pixels can flip with the bicubic-resize LSB.
   CHECK_MSG(frac < 0.01, "segmentation matches MinerU within 1% (boundary LSB)");
+
+  // Stage 2: cell polygons. Compare against the golden cell bboxes (need_ocr=False ->
+  // [x0,y0,x1,y1] per cell). MinerU also emits a few thin edge-sliver cells (between the
+  // last gridline and the crop edge) from its line-extension geometry; we verify the main
+  // grid cells match within a few px and report the sliver delta.
+  std::string praw = read_file(golden_dir + "/wired_table_polys.f32");
+  int ncell = (int)praw.size() / (4 * sizeof(float));
+  std::vector<std::array<float, 4>> wantc(ncell);
+  std::memcpy(wantc.data(), praw.data(), praw.size());
+
+  auto cells = wt.cell_polygons(rgb, w, h);
+  std::cerr << "wired cells: " << cells.size() << " (golden " << ncell << ")\n";
+  // Each produced cell -> its axis-aligned bbox; match to the nearest golden cell.
+  int matched = 0;
+  for (const std::array<float, 8>& c : cells) {
+    float gx0 = c[0], gy0 = c[1], gx1 = c[0], gy1 = c[1];
+    for (int k = 0; k < 4; ++k) {
+      gx0 = std::min(gx0, c[2 * k]); gy0 = std::min(gy0, c[2 * k + 1]);
+      gx1 = std::max(gx1, c[2 * k]); gy1 = std::max(gy1, c[2 * k + 1]);
+    }
+    float best = 1e9;
+    for (auto& wc : wantc)
+      best = std::min(best, std::abs(gx0 - wc[0]) + std::abs(gy0 - wc[1]) + std::abs(gx1 - wc[2]) +
+                                std::abs(gy1 - wc[3]));
+    if (best <= 12) ++matched;  // ~3px/edge
+  }
+  std::cerr << "wired cells: " << matched << "/" << cells.size()
+            << " match a golden cell within ~3px/edge\n";
+  CHECK_MSG(cells.size() >= 12, "extracts a plausible cell grid");
+  CHECK_MSG(matched >= (int)cells.size() - 1, "produced cells align with MinerU's grid");
   return TEST_SUMMARY();
 }

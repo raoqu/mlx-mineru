@@ -25,6 +25,12 @@ class WiredTableRecognizer {
   std::vector<uint8_t> segment(const std::vector<uint8_t>& rgb, int w, int h, int& nh,
                                int& nw) const;
 
+  // Stage 2: segmentation -> cell polygons (4 corners each, [x0,y0,..,x3,y3]) in the crop's
+  // pixel space. Faithful to TSRUnet.postprocess (line extract + draw + region boxes), for
+  // the non-rotated case.
+  std::vector<std::array<float, 8>> cell_polygons(const std::vector<uint8_t>& rgb, int w,
+                                                  int h) const;
+
  private:
   WiredTableRecognizer();
   struct Impl;
