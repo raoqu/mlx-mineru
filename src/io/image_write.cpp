@@ -13,6 +13,20 @@ bool write_jpeg(const std::string& path, const std::vector<uint8_t>& rgb, int wi
   return stbi_write_jpg(path.c_str(), width, height, 3, rgb.data(), quality) != 0;
 }
 
+std::vector<uint8_t> encode_jpeg(const std::vector<uint8_t>& rgb, int width, int height,
+                                 int quality) {
+  std::vector<uint8_t> out;
+  if ((int)rgb.size() < width * height * 3 || width <= 0 || height <= 0) return out;
+  stbi_write_jpg_to_func(
+      [](void* ctx, void* data, int size) {
+        auto* v = static_cast<std::vector<uint8_t>*>(ctx);
+        const auto* p = static_cast<const uint8_t*>(data);
+        v->insert(v->end(), p, p + size);
+      },
+      &out, width, height, 3, rgb.data(), quality);
+  return out;
+}
+
 std::string content_hash_hex(const std::vector<uint8_t>& data) {
   // FNV-1a 64-bit.
   uint64_t h = 1469598103934665603ULL;

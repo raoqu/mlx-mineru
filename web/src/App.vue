@@ -42,16 +42,20 @@ const backendHint = computed(() => ({
   'vlm': 'Qwen2-VL 视觉大模型（整页理解，含图像）',
 }[backend.value] || '本地原生解析引擎'))
 
+const previewUrl = ref('')
 function onPick(e) { setFile(e.target.files?.[0]) }
 function onDrop(e) { dragOver.value = false; setFile(e.dataTransfer.files?.[0]) }
 function setFile(f) {
   if (!f) return
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   file.value = f
   fileName.value = f.name
+  previewUrl.value = /\.pdf$/i.test(f.name) ? URL.createObjectURL(f) : ''
 }
 function clearAll() {
-  file.value = null; fileName.value = ''; md.value = ''; contentList.value = null
-  error.value = ''; resetSteps()
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  file.value = null; fileName.value = ''; previewUrl.value = ''
+  md.value = ''; contentList.value = null; error.value = ''; resetSteps()
 }
 
 async function convert() {
@@ -174,8 +178,9 @@ function copy(text) { navigator.clipboard?.writeText(text) }
       <section class="card preview">
         <div class="card-head">📄 doc preview</div>
         <div class="preview-body">
-          <div v-if="!fileName" class="ph">📄</div>
-          <div v-else class="ph-named">{{ fileName }}</div>
+          <embed v-if="previewUrl" :src="previewUrl" type="application/pdf" class="pdf" />
+          <div v-else-if="fileName" class="ph-named">{{ fileName }}</div>
+          <div v-else class="ph">📄</div>
         </div>
       </section>
 

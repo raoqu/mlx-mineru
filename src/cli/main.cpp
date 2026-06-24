@@ -106,6 +106,9 @@ static std::string instruction_for(const std::string& type) {
   return "\nText Recognition:";
 }
 
+// RGB crop -> base64 JPEG data URI (defined below; used by process_page's "@inline" mode).
+static std::string jpg_data_uri(const std::vector<uint8_t>& rgb, int w, int h);
+
 // One text line/span wrapper.
 static json text_lines(const std::string& content, const std::array<double, 4>& bb) {
   return json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
@@ -275,9 +278,15 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
             {"lines", json::array({{{"bbox", {bb[0], bb[1], bb[2], bb[3]}},
                 {"spans", json::array({{{"type", ct::kInterlineEquation}, {"content", latex}}})}}})}};
     } else if ((b.type == "image" || b.type == "chart") && !images_dir.empty()) {
-      // Save the cropped region; reference it via image_path (bucket "images").
-      std::string fname = mineru::content_hash_hex(crop) + ".jpg";
-      mineru::write_jpeg(images_dir + "/" + fname, crop, cw, ch);
+      // Reference the cropped region via image_path. "@inline" -> self-contained base64 data
+      // URI (web server, no file serving); otherwise write a JPEG into images_dir.
+      std::string fname;
+      if (images_dir == "@inline") {
+        fname = jpg_data_uri(crop, cw, ch);
+      } else {
+        fname = mineru::content_hash_hex(crop) + ".jpg";
+        mineru::write_jpeg(images_dir + "/" + fname, crop, cw, ch);
+      }
       const char* body = (b.type == "chart") ? bt::kChartBody : bt::kImageBody;
       const char* span = (b.type == "chart") ? ct::kChart : ct::kImage;
       pb = {{"type", (b.type == "chart") ? bt::kChart : bt::kImage},
@@ -342,7 +351,8 @@ static json convert_batched(const mineru::Qwen2VLModel& model, const mineru::Qwe
 
 // Convert an open PDF document (page range) -> pdf_info (middle_json pages).
 static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
-                             mineru::PdfDocument& doc, int start_page, int end_page) {
+                             mineru::PdfDocument& doc, int start_page, int end_page,
+                             const std::string& images_dir = "") {
   int npages = doc.page_count();
   int s = std::clamp(start_page, 0, npages - 1);
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
@@ -352,7 +362,7 @@ static json convert_document(const mineru::Qwen2VLModel& model, const mineru::Qw
     pages.push_back(doc.render_page(p));
     idxs.push_back(p);
   }
-  return convert_batched(model, tok, pages, idxs, /*images_dir=*/"", /*batch_size=*/6);
+  return convert_batched(model, tok, pages, idxs, images_dir, /*batch_size=*/6);
 }
 
 // PDF bytes + max page count + chosen backend -> {md_content, content_list}. The dispatch
@@ -544,6 +554,15 @@ static std::string vlm_understand(const mineru::Qwen2VLModel& model,
   return a == std::string::npos ? "" : c.substr(a, z - a + 1);
 }
 
+// RGB crop -> self-contained base64 JPEG data URI (MinerU inlines images the same way:
+// cv2.imencode(".jpg") + base64). Lets the web UI render images with no file serving.
+static std::string jpg_data_uri(const std::vector<uint8_t>& rgb, int w, int h) {
+  std::vector<uint8_t> jpg = mineru::encode_jpeg(rgb, w, h, 85);
+  if (jpg.empty()) return "";
+  return "data:image/jpeg;base64," +
+         httplib::detail::base64_encode(std::string(jpg.begin(), jpg.end()));
+}
+
 // Crop an axis-aligned region (page-point bbox * scale) from an RGB page image.
 static std::vector<uint8_t> crop_region(const std::vector<uint8_t>& rgb, int W, int H,
                                         const json& bbox, double scale, int& cw, int& ch) {
@@ -578,9 +597,10 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
     vmodel = std::make_unique<mineru::Qwen2VLModel>(
         mineru::Qwen2VLModel::load(model_dir + "/model.safetensors", cfg));
   };
+  // Empty bucket: image_path values are full base64 data URIs, used verbatim by union_make.
   auto to_out = [](const json& pdf_info) {
-    std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
-    json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
+    std::string md = mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "").get<std::string>();
+    json cl = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "");
     return json{{"md_content", md}, {"content_list", cl}};
   };
 
@@ -625,31 +645,33 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
         pages.push_back(std::move(pg));
       }
       json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pl->rec);
-      if (backend == "hybrid-engine") {
-        ensure_vlm();
-        for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
-          double scale = pages[p].page_w > 0 ? (double)dims[p].first / pages[p].page_w : 1.0;
-          for (auto& blk : pdf_info[p]["para_blocks"]) {
-            std::string t = blk.value("type", "");
-            if (t != "image" && t != "chart") continue;
-            for (auto& sub : blk["blocks"])
-              for (auto& ln : sub["lines"])
-                for (auto& sp : ln["spans"]) {
-                  if (!sp.contains("image_path")) continue;
-                  int cw, ch;
-                  auto crop = crop_region(pages[p].rgb, dims[p].first, dims[p].second,
-                                          sp["bbox"], scale, cw, ch);
-                  if (cw > 0 && ch > 0)
-                    sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
-                }
-          }
+      // Inline image/chart crops as base64 data URIs so they render in the UI; in hybrid
+      // mode also fill the span content via the VLM (image/chart understanding).
+      bool hybrid = (backend == "hybrid-engine");
+      if (hybrid) ensure_vlm();
+      for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
+        double scale = pages[p].page_w > 0 ? (double)dims[p].first / pages[p].page_w : 1.0;
+        for (auto& blk : pdf_info[p]["para_blocks"]) {
+          std::string t = blk.value("type", "");
+          if (t != "image" && t != "chart") continue;
+          for (auto& sub : blk["blocks"])
+            for (auto& ln : sub["lines"])
+              for (auto& sp : ln["spans"]) {
+                if (!sp.contains("image_path")) continue;
+                int cw, ch;
+                auto crop = crop_region(pages[p].rgb, dims[p].first, dims[p].second, sp["bbox"],
+                                        scale, cw, ch);
+                if (cw <= 0 || ch <= 0) continue;
+                sp["image_path"] = jpg_data_uri(crop, cw, ch);
+                if (hybrid) sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
+              }
         }
       }
       return to_out(pdf_info);
     }
 #endif
     ensure_vlm();
-    return to_out(convert_document(*vmodel, *vtok, doc, 0, e));
+    return to_out(convert_document(*vmodel, *vtok, doc, 0, e, /*images_dir=*/"@inline"));
   };
 
   return run_web_server(convert, backends, default_backend, host, port, serve_ui);
