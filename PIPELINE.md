@@ -121,6 +121,15 @@ largest remaining task; it advances phase by phase with golden verification.
   within **0.03px**, and full **HTML matches MinerU exactly** (OCR'd the table with the
   onnx det+rec chain, fed the same ocr_result to MinerU's TableMatch for the golden).
   Wired-table UNet path is the remaining table variant.
-- **Also queued**: UNet wired-table structure; the layout heuristic-filter layer +
-  reading order; then assembly (P5) that ties layout + OCR + formula + table into
-  middle_json -> union_make for the first full pipeline-backend page -> Markdown.
+- **P5 assembly — golden captured, port pending**: MinerU's real pipeline backend now
+  runs locally and `scripts/gen_pipeline_golden.py` dumps the per-page **model_list**
+  (layout_dets: region boxes {text,paragraph_title,...} + `ocr_text` line boxes carrying
+  OCR text) and the assembled **middle_json** (`tests/golden/pipeline_*.json`, a.pdf 3
+  pages). Setup notes (config, deps, the Layout config.json that the raw HF download
+  omits) are in the script header. The transform to port: `MagicModel`
+  (`__fix_axis` scale-by `model_w/page_pt_w` ≈ 2.78 @200dpi → page-point coords; group
+  `ocr_text` spans into region blocks via SpanBlockMatcher; `merge_spans_to_line` +
+  sort; label→BlockType map) + `model_json_to_middle_json` + `para_split` + title
+  leveling → `para_blocks`; then the existing byte-exact `union_make` renders Markdown.
+  a.pdf p0 is text/title-only (29 dets → 10 para_blocks, 1:1) — the natural first slice.
+- **Also queued**: UNet wired-table structure; full P5 MagicModel/para_split port.
