@@ -31,6 +31,15 @@ class WiredTableRecognizer {
   std::vector<std::array<float, 8>> cell_polygons(const std::vector<uint8_t>& rgb, int w,
                                                   int h) const;
 
+  // Stage 3: cells -> logical grid. polygons sorted in reading order ([tl,bl,br,tr] per
+  // cell); logic[i] = [row_start, row_end, col_start, col_end]. Faithful to TSRUnet.__call__
+  // corner ordering + TableRecover.
+  struct Structure {
+    std::vector<std::array<float, 8>> polygons;
+    std::vector<std::array<int, 4>> logic;
+  };
+  Structure recognize_structure(const std::vector<uint8_t>& rgb, int w, int h) const;
+
  private:
   WiredTableRecognizer();
   struct Impl;

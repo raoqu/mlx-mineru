@@ -280,4 +280,135 @@ std::vector<std::array<float, 8>> WiredTableRecognizer::cell_polygons(
 #endif
 }
 
+// ---- Stage 3: cells -> logical grid (TableRecover) --------------------------
+namespace {
+// is_single_axis_contained on y axis (sorted_ocr_boxes).
+bool y_contained(const std::array<double, 4>& a, const std::array<double, 4>& b, double thr) {
+  double a_area = a[3] - a[1], b_area = b[3] - b[1];
+  double i = std::min(a[3], b[3]) - std::max(a[1], b[1]);
+  double r1 = a_area > 0 ? (a_area - i) / a_area : 0, r2 = b_area > 0 ? (b_area - i) / b_area : 0;
+  return r1 < thr || r2 < thr;
+}
+double L2(double ax, double ay, double bx, double by) { return std::hypot(ax - bx, ay - by); }
+}  // namespace
+
+WiredTableRecognizer::Structure WiredTableRecognizer::recognize_structure(
+    const std::vector<uint8_t>& rgb, int w, int h) const {
+  Structure S;
+  auto cells = cell_polygons(rgb, w, h);  // 8-coord [tl,tr,br,bl]
+  int N = (int)cells.size();
+  if (N == 0) return S;
+  // TSRUnet.__call__: reshape (N,4,2) then swap corner [3]<->[1] -> [tl,bl,br,tr].
+  std::vector<std::array<std::array<float, 2>, 4>> P(N);
+  for (int i = 0; i < N; ++i) {
+    auto& c = cells[i];
+    P[i] = {{{c[0], c[1]}, {c[6], c[7]}, {c[4], c[5]}, {c[2], c[3]}}};  // tl,bl,br,tr
+  }
+  // sorted_ocr_boxes on box_4_2_poly_to_box_4_1 = [tl.x, tl.y, br.x, br.y].
+  std::vector<std::array<double, 4>> ab(N);
+  std::vector<int> idx(N);
+  for (int i = 0; i < N; ++i) {
+    ab[i] = {P[i][0][0], P[i][0][1], P[i][2][0], P[i][2][1]};
+    idx[i] = i;
+  }
+  std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) {
+    return ab[a][1] < ab[b][1] || (ab[a][1] == ab[b][1] && ab[a][0] < ab[b][0]);
+  });
+  // bubble pass (sorted_ocr_boxes): same-row, swap if out of x order.
+  std::vector<std::array<double, 4>> sb(N);
+  for (int i = 0; i < N; ++i) sb[i] = ab[idx[i]];
+  for (int i = 0; i < N - 1; ++i)
+    for (int j = i; j >= 0; --j) {
+      if (y_contained(sb[j], sb[j + 1], 0.2) && sb[j + 1][0] < sb[j][0] &&
+          std::abs(sb[j][1] - sb[j + 1][1]) < 20) {
+        std::swap(sb[j], sb[j + 1]);
+        std::swap(idx[j], idx[j + 1]);
+      } else break;
+    }
+  std::vector<std::array<std::array<float, 2>, 4>> poly(N);
+  for (int i = 0; i < N; ++i) poly[i] = P[idx[i]];
+
+  // --- TableRecover ---
+  // get_rows: cluster by tl.y diff > rows_thresh(10).
+  std::vector<std::vector<int>> rows;
+  {
+    std::vector<int> cur{0};
+    for (int i = 1; i < N; ++i) {
+      if (std::abs(poly[i][0][1] - poly[i - 1][0][1]) > 10) { rows.push_back(cur); cur.clear(); }
+      cur.push_back(i);
+    }
+    rows.push_back(cur);
+  }
+  // get_benchmark_cols.
+  int longest = 0;
+  for (int r = 1; r < (int)rows.size(); ++r) if (rows[r].size() > rows[longest].size()) longest = r;
+  std::vector<double> colx;
+  for (int i : rows[longest]) colx.push_back(poly[i][0][0]);
+  double min_x = colx.front(), max_x = poly[rows[longest].back()][2][0];
+  const double cthr = 15;
+  auto update_col = [&](double cur, bool insert_last) {
+    for (size_t i = 0; i < colx.size(); ++i) {
+      if (cur - cthr <= colx[i] && colx[i] <= cur + cthr) return;
+      if (cur < min_x) { colx.insert(colx.begin(), cur); min_x = cur; return; }
+      if (cur > max_x) { if (insert_last) colx.push_back(cur); max_x = cur; return; }
+      if (cur < colx[i]) { colx.insert(colx.begin() + i, cur); return; }
+    }
+  };
+  for (auto& row : rows)
+    for (int i : row) { update_col(poly[i][0][0], true); update_col(poly[i][2][0], false); }
+  int col_nums = (int)colx.size();
+  std::vector<double> col_w;
+  for (int i = 1; i < col_nums; ++i) col_w.push_back(colx[i] - colx[i - 1]);
+  col_w.push_back(max_x - colx.back());
+  // get_benchmark_rows.
+  std::vector<double> bench_y;
+  for (auto& row : rows) bench_y.push_back(poly[row[0]][0][1]);
+  std::vector<double> row_h;
+  for (size_t i = 1; i < bench_y.size(); ++i) row_h.push_back(bench_y[i] - bench_y[i - 1]);
+  double max_h = 0;
+  for (int i : rows.back()) max_h = std::max(max_h, L2(poly[i][1][0], poly[i][1][1], poly[i][0][0], poly[i][0][1]));
+  row_h.push_back(max_h);
+  int row_nums = (int)bench_y.size();
+  // get_merge_cells -> logic_points.
+  std::vector<std::array<int, 4>> logic(N);
+  const double mthr = 10;
+  for (int cur_row = 0; cur_row < (int)rows.size(); ++cur_row) {
+    std::vector<int> col_acc;  // accumulated col span in this row
+    int running = 0;
+    for (int one : rows[cur_row]) {
+      auto& box = poly[one];
+      double bw = L2(box[3][0], box[3][1], box[0][0], box[0][1]);
+      int loc = 0;
+      double bd = 1e300;
+      for (int i = 0; i < col_nums; ++i) { double d = std::abs(colx[i] - box[0][0]); if (d < bd) { bd = d; loc = i; } }
+      int col_start = std::max(running, loc);
+      int span_c = col_nums - col_start;
+      for (int i = col_start; i < col_nums; ++i) {
+        double cum = 0; for (int k = col_start; k <= i; ++k) cum += col_w[k];
+        if (i == col_start && cum > bw) { span_c = 1; break; }
+        if (std::abs(cum - bw) <= mthr) { span_c = i + 1 - col_start; break; }
+        if (cum > bw) { int id = (std::abs(cum - bw) < std::abs(cum - col_w[i] - bw)) ? i : i - 1; span_c = id + 1 - col_start; break; }
+      }
+      int col_end = span_c + col_start - 1;
+      running += span_c;
+      double bh = L2(box[1][0], box[1][1], box[0][0], box[0][1]);
+      int row_start = cur_row, span_r = row_nums - row_start;
+      for (int j = row_start; j < row_nums; ++j) {
+        double cum = 0; for (int k = row_start; k <= j; ++k) cum += row_h[k];
+        if (j == row_start && cum > bh) { span_r = 1; break; }
+        if (std::abs(bh - cum) <= mthr) { span_r = j + 1 - row_start; break; }
+        if (cum > bh) { int id = (std::abs(cum - bh) < std::abs(cum - row_h[j] - bh)) ? j : j - 1; span_r = id + 1 - row_start; break; }
+      }
+      int row_end = span_r + row_start - 1;
+      logic[one] = {row_start, row_end, col_start, col_end};
+    }
+  }
+  for (int i = 0; i < N; ++i) {
+    S.polygons.push_back({poly[i][0][0], poly[i][0][1], poly[i][1][0], poly[i][1][1],
+                          poly[i][2][0], poly[i][2][1], poly[i][3][0], poly[i][3][1]});
+    S.logic.push_back(logic[i]);
+  }
+  return S;
+}
+
 }  // namespace mineru

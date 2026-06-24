@@ -84,5 +84,25 @@ int main(int argc, char** argv) {
             << " match a golden cell within ~1px/edge\n";
   CHECK_MSG((int)cells.size() == ncell, "cell count matches MinerU exactly");
   CHECK_MSG(matched == (int)cells.size(), "all cells match MinerU's grid (bit-exact cv2)");
+
+  // Stage 3: logical grid (logic_points) vs golden (row_start,row_end,col_start,col_end).
+  std::string lraw = read_file(golden_dir + "/wired_table_logi.i32");
+  std::vector<int32_t> wlogi(lraw.size() / 4);
+  std::memcpy(wlogi.data(), lraw.data(), lraw.size());
+  auto st = wt.recognize_structure(rgb, w, h);
+  std::cerr << "wired logic: " << st.logic.size() << " cells (golden " << wlogi.size() / 4 << ")\n";
+  CHECK_MSG((int)st.logic.size() * 4 == (int)wlogi.size(), "logic point count");
+  int lmatch = 0;
+  for (size_t i = 0; i < st.logic.size(); ++i) {
+    bool ok = true;
+    for (int k = 0; k < 4; ++k) if (st.logic[i][k] != wlogi[i * 4 + k]) ok = false;
+    if (ok) ++lmatch;
+    else std::cerr << "  cell " << i << " logic [" << st.logic[i][0] << "," << st.logic[i][1] << ","
+                   << st.logic[i][2] << "," << st.logic[i][3] << "] vs golden [" << wlogi[i * 4]
+                   << "," << wlogi[i * 4 + 1] << "," << wlogi[i * 4 + 2] << "," << wlogi[i * 4 + 3]
+                   << "]\n";
+  }
+  std::cerr << "wired logic: " << lmatch << "/" << st.logic.size() << " match MinerU\n";
+  CHECK_MSG(lmatch == (int)st.logic.size(), "logical grid (row/col spans) matches MinerU");
   return TEST_SUMMARY();
 }
