@@ -129,6 +129,13 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p2_model.json)
   add_test(NAME pipeline_formula COMMAND test_pipeline_formula ${CMAKE_SOURCE_DIR}/tests/golden)
 endif()
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p5_model.json)
+  add_executable(test_pipeline_table tests/test_pipeline_table.cpp)
+  target_include_directories(test_pipeline_table PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  target_link_libraries(test_pipeline_table PRIVATE mineru_core)
+  add_test(NAME pipeline_table COMMAND test_pipeline_table ${CMAKE_SOURCE_DIR}/tests/golden)
+endif()
+
 add_executable(test_mkcontent_golden tests/test_mkcontent_golden.cpp)
 target_include_directories(test_mkcontent_golden PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(test_mkcontent_golden PRIVATE mineru_core)

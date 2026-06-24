@@ -27,6 +27,7 @@ const std::map<std::string, std::string>& labels_map() {
       {"paragraph_title", "paragraph_title"}, {"reference_content", "ref_text"},
       {"text", "text"},                {"vertical_text", "vertical_text"},
       {"vision_footnote", "footnote"}, {"display_formula", "interline_equation"},
+      {"table", "table"},
   };
   return m;
 }
@@ -112,7 +113,9 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
   // __fix_axis + __post_process: scale boxes, drop tiny; split into spans (ocr_text) and
   // region blocks (reindexed 1..N in array order).
   std::vector<Span> spans;
-  struct Region { Box bbox; std::string type; double score; int index; std::string latex; };
+  struct Region {
+    Box bbox; std::string type; double score; int index; std::string latex; std::string html;
+  };
   std::vector<Region> regions;
   int next_index = 1;
   for (const json& d : dets) {
@@ -125,7 +128,8 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
     }
     auto it = labels_map().find(label);
     if (it == labels_map().end()) continue;
-    regions.push_back({b, it->second, d.value("score", 0.0), next_index++, d.value("latex", "")});
+    regions.push_back({b, it->second, d.value("score", 0.0), next_index++, d.value("latex", ""),
+                       d.value("html", "")});
   }
 
   // __build_page_blocks: greedily match unused spans into each block (overlap>0.5), then
@@ -140,6 +144,18 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
       json line = {{"bbox", box_json(r.bbox)}, {"spans", json::array({span})}};
       blocks.push_back({{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
                         {"type", "interline_equation"}, {"lines", json::array({line})}});
+      continue;
+    }
+    // Table: two-layer block {type:table, blocks:[table_body(html span)]}. NOTE: caption/
+    // footnote association (find_best_visual_parent) is a documented follow-up, so captions
+    // (figure_title) and footnotes (vision_footnote) stay as their own blocks for now.
+    if (r.type == "table") {
+      json span = {{"bbox", box_json(r.bbox)}, {"type", "table"}, {"html", r.html}};
+      json line = {{"bbox", box_json(r.bbox)}, {"spans", json::array({span})}};
+      json body = {{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
+                   {"type", "table_body"}, {"lines", json::array({line})}};
+      blocks.push_back({{"type", "table"}, {"bbox", box_json(r.bbox)}, {"index", r.index},
+                        {"score", r.score}, {"blocks", json::array({body})}});
       continue;
     }
     std::vector<Span> blk_spans;
