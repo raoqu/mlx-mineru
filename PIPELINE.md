@@ -88,8 +88,19 @@ largest remaining task; it advances phase by phase with golden verification.
   C++ path on the saved a.pdf render: **19/19 boxes match MinerU within ≤1px/coord**
   (cv2.resize vs our half-pixel bilinear is the only residual). Detector takes RGB +
   (w,h), returns text-line quads in source pixels — ready to crop and feed rec.
-- **Next OCR (C++)**: chain det->crop(perspective/rotate)->rec for full page text
-  (MinerU `get_rotate_crop_image`), then per-region OCR in the pipeline assembly.
+- **P3 OCR full-page chain ✅**: `OcrPipeline` (`src/pipeline/ocr.cpp`) — faithful port
+  of MinerU `PytorchPaddleOCR.__call__`: det -> `sorted_boxes` -> `merge_det_boxes`
+  (calculate_is_angle / merge_spans_to_line / merge_overlapping_spans) -> rotate-crop
+  (`get_rotate_crop_image`, aligned fast-path + perspective + np.rot90 for tall crops) ->
+  batched CTC rec (sort by aspect, batch of 6 sharing the widest crop's `max_wh_ratio`)
+  -> drop_score 0.5. `ctest ocr_page` runs the whole C++ chain on a.pdf p0 vs MinerU's
+  real chain (its actual `sorted_boxes`/`merge_det_boxes`/`get_rotate_crop_image_for_text_rec`
+  + predict_rec batching): **19/19 lines, boxes within ~1px, 18/19 texts exact**. The one
+  text delta is a doubled em-dash: we don't link OpenCV, so our bilinear differs from
+  cv2.resize by ≤1 LSB (cv2 isn't bit-exact across its own scalar/SIMD builds either), and
+  that sub-pixel delta shifts a det box ~1px which re-buckets one crop's rec batch.
+- **Next OCR (C++)**: integrate per-region OCR into the pipeline assembly (P5); the chain
+  is ready to run on layout text/title regions.
 - **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
   layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
   assembly (P5).

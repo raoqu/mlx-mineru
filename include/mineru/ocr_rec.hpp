@@ -23,8 +23,11 @@ class TextRecognizer {
   TextRecognizer(TextRecognizer&&) noexcept;
   TextRecognizer& operator=(TextRecognizer&&) noexcept;
 
-  // rgb: w*h*3 RGB8 text-line crop.
-  RecResult recognize(const std::vector<uint8_t>& rgb, int w, int h) const;
+  // rgb: w*h*3 RGB8 text-line crop. max_wh_override: the batch-shared max_wh_ratio
+  // (MinerU pads a whole rec batch to the widest crop's aspect). <0 -> single-crop
+  // behavior (max(w/h, imgW/imgH)).
+  RecResult recognize(const std::vector<uint8_t>& rgb, int w, int h,
+                      double max_wh_override = -1.0) const;
 
  private:
   TextRecognizer();

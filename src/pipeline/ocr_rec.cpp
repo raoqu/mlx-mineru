@@ -48,10 +48,13 @@ TextRecognizer TextRecognizer::load(const std::string& onnx_path, const std::str
   return r;
 }
 
-RecResult TextRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int h) const {
+RecResult TextRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int h,
+                                    double max_wh_override) const {
   const Impl& m = *impl_;
-  // Width per MinerU resize_norm_img (single crop, max_wh_ratio >= imgW/imgH).
-  double max_wh = std::max((double)w / h, (double)kWbase / kH);
+  // Width per MinerU resize_norm_img. max_wh_ratio = batch-shared aspect (or w/h for a
+  // single crop), then max'd with imgW/imgH; imgW = int(imgH * max_wh_ratio).
+  double max_wh = max_wh_override >= 0.0 ? std::max(max_wh_override, (double)kWbase / kH)
+                                        : std::max((double)w / h, (double)kWbase / kH);
   int imgW = std::max(kMinW, std::min(kMaxW, (int)(kH * max_wh)));
   double ratio = (double)w / h;
   int ratio_imgH = std::max((int)std::ceil(kH * ratio), kMinW);
