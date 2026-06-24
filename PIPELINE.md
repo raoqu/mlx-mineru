@@ -64,6 +64,14 @@ largest remaining task; it advances phase by phase with golden verification.
   matches a Python golden (same algorithm) exactly. Added reusable
   `resize_bilinear_rgb8`. (cv2 fixed-point bilinear approximated by float bilinear;
   doesn't flip the class.)
-- **Next**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
+- **P3 OCR export gate ✅**: PP-OCRv6 det (DBNet) + rec (CTC) -> ocr_det.onnx /
+  ocr_rec.onnx via `scripts/export_ocr_onnx.py`. Built directly through
+  pytorchocr BaseOCRV20 + arch_config.yaml + RepVGG reparameterization (avoids the
+  cv2/shapely/pyclipper deps the full import needs). torch-vs-onnxruntime:
+  det 3.9e-5, rec 7.9e-5. Dict ppocrv6_dict.txt (18709 chars) copied.
+- **Next OCR (C++)**: det preprocess (resize /32, normalize) + DB post-process
+  (sigmoid -> threshold -> contours -> unclip -> boxes); rec preprocess (H=48) +
+  CTC greedy decode + dict. (DB contours/unclip is the heavy part.)
+- **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
   layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
   assembly (P5).
