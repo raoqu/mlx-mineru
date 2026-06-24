@@ -143,5 +143,16 @@ largest remaining task; it advances phase by phase with golden verification.
   post-OCR step (re-running OCR rec on each span crop), which ties to the existing C++ OCR
   recognizer. Next: wire post-OCR text-fill + image/table/formula spans → first full
   pipeline-backend page → Markdown via the byte-exact union_make.
-- **Also queued**: UNet wired-table structure; post-OCR text-fill; visual-span path
-  (image/table/formula) in the assembly; para_split cross-block merging for multi-page docs.
+- **P5 post-OCR text-fill ✅**: `fill_span_text` (`src/pipeline/post_ocr.cpp`) — faithful
+  port of `_apply_post_ocr`: crop each span from the page image (bbox×scale, rotate-if-tall
+  via `get_rotate_crop_image`), batched rec (sort by aspect, batch-of-6 shared max_wh),
+  drop below `min_confidence` 0.5. `ctest pipeline_textfill` renders a.pdf p0 at 200 DPI via
+  the byte-exact `PdfDocument`, fills all 19 spans, **ASCII (digits/punct) exact vs MinerU**.
+  Finding: **a.pdf is a digital PDF** — MinerU reads its embedded text layer via `pdftext`
+  (Kangxi-radical codepoints + NBSP), so the CJK is NFKC-equivalent to our OCR-read glyphs
+  (CJK-unified) but not byte-equal. The OCR text-fill is the scanned-doc path and is correct;
+  faithful digital-PDF char extraction (pdftext + fill_char_in_spans) is a separate follow-up.
+  With text filled, the existing byte-exact union_make renders the page → Markdown.
+- **Also queued**: UNet wired-table structure; digital-PDF text extraction (pdftext) for
+  text-layer PDFs; visual-span path (image/table/formula) in the assembly; para_split
+  cross-block merging for multi-block paragraphs.

@@ -251,7 +251,7 @@ endif()
 
 # ---- Pipeline backend (ONNX Runtime models) ---------------------------------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp)
+  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp)
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm thirdparty_headers)
 
@@ -306,6 +306,18 @@ if(HAVE_ORT)
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
               ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt)
+  endif()
+
+  if(HAVE_PDFIUM AND EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/pipeline_p0_model.json AND
+     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx)
+    add_executable(test_pipeline_textfill tests/test_pipeline_textfill.cpp)
+    target_include_directories(test_pipeline_textfill PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_pipeline_textfill PRIVATE mineru_pipeline mineru_core mineru_pdf)
+    set_target_properties(test_pipeline_textfill PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
+    add_test(NAME pipeline_textfill COMMAND test_pipeline_textfill ${CMAKE_SOURCE_DIR}/tests/golden
+              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
+              ${CMAKE_SOURCE_DIR}/a.pdf)
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/mfr.json AND
