@@ -27,7 +27,8 @@ static std::vector<uint8_t> crop_rgb(const std::vector<uint8_t>& rgb, int w, int
 
 nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector& det,
                                 const std::vector<uint8_t>& rgb, int w, int h,
-                                const FormulaRecognizer* mfr) {
+                                const FormulaRecognizer* mfr, const OcrPipeline* ocr,
+                                const TableRecognizer* table_rec) {
   nlohmann::json dets = nlohmann::json::array();
   // Region boxes (reading-order index already assigned by the detector).
   for (const LayoutBox& b : layout.detect(rgb, w, h)) {
@@ -37,6 +38,21 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
       int cw, ch;
       std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
       d["latex"] = (cw > 0 && ch > 0) ? mfr->recognize(crop, cw, ch).latex : std::string();
+    } else if (ocr && table_rec && b.label == "table") {
+      int cw, ch;
+      std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
+      std::string html;
+      if (cw > 0 && ch > 0) {
+        std::vector<TableOcrItem> items;
+        for (const OcrLine& ln : ocr->run(crop, cw, ch))
+          items.push_back({ln.box, ln.text, ln.score});
+        html = table_rec->recognize_html(crop, cw, ch, items);
+        // MinerU keeps only <table>..</table> (strips the <html><body> wrapper).
+        size_t st = html.find("<table>"), en = html.rfind("</table>");
+        if (st != std::string::npos && en != std::string::npos)
+          html = html.substr(st, en + 8 - st);
+      }
+      d["html"] = html;
     }
     dets.push_back(std::move(d));
   }

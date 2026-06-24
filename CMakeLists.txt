@@ -390,6 +390,18 @@ if(HAVE_ORT)
                   ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/models/pipeline
                   ${CMAKE_SOURCE_DIR}/tests/demo1.pdf)
       endif()
+
+      if(EXISTS ${CMAKE_SOURCE_DIR}/tests/demo1.pdf AND
+         EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p5_model.json AND
+         EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/SlanetPlus/slanet-plus.onnx)
+        add_executable(test_pipeline_table_scratch tests/test_pipeline_table_scratch.cpp)
+        target_include_directories(test_pipeline_table_scratch PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+        target_link_libraries(test_pipeline_table_scratch PRIVATE mineru_pipeline mineru_core mineru_pdf)
+        set_target_properties(test_pipeline_table_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
+        add_test(NAME pipeline_table_scratch COMMAND test_pipeline_table_scratch
+                  ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/models/pipeline
+                  ${CMAKE_SOURCE_DIR}/tests/demo1.pdf)
+      endif()
     endif()
   endif()
 

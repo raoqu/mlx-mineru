@@ -418,6 +418,18 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
         models + "/MFR/mfr_vocab.txt"));
     std::cerr << "[mlx-mineru] formula recognizer loaded\n";
   }
+  // Table recognition is optional (needs a per-crop OCR pipeline + SLANet+).
+  std::unique_ptr<mineru::OcrPipeline> table_ocr;
+  std::unique_ptr<mineru::TableRecognizer> table_rec;
+  std::string slanet = models + "/TabRec/SlanetPlus/slanet-plus.onnx";
+  if (fsx::exists(slanet)) {
+    table_ocr = std::make_unique<mineru::OcrPipeline>(mineru::OcrPipeline::load(
+        models + "/OCR/ocr_det.onnx", models + "/OCR/ocr_rec.onnx",
+        models + "/OCR/ppocrv6_dict.txt"));
+    table_rec = std::make_unique<mineru::TableRecognizer>(mineru::TableRecognizer::load(
+        slanet, models + "/TabRec/SlanetPlus/table_structure_dict.txt"));
+    std::cerr << "[mlx-mineru] table recognizer loaded (wireless/SLANet+)\n";
+  }
   std::cerr << "[mlx-mineru] pipeline models loaded in " << secs(t0, Clock::now()) << "s\n";
 
   auto t_inf = Clock::now();
@@ -425,8 +437,8 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   std::vector<mineru::PipelinePageImage> pages;
   for (int p = s; p <= e; ++p) {
     mineru::PageImage im = doc.render_page(p, dpi);
-    model_list.push_back(
-        mineru::build_page_model(layout, det, im.rgb, im.width, im.height, mfr.get()));
+    model_list.push_back(mineru::build_page_model(layout, det, im.rgb, im.width, im.height,
+                                                  mfr.get(), table_ocr.get(), table_rec.get()));
     mineru::PipelinePageImage pg;
     pg.page_w = (int)std::lround(im.width_pt);
     pg.page_h = (int)std::lround(im.height_pt);

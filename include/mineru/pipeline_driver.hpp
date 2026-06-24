@@ -10,8 +10,10 @@
 
 #include "mineru/formula_rec.hpp"
 #include "mineru/layout_det.hpp"
+#include "mineru/ocr.hpp"
 #include "mineru/ocr_det.hpp"
 #include "mineru/ocr_rec.hpp"
+#include "mineru/table_rec.hpp"
 #include "nlohmann/json.hpp"
 
 namespace mineru {
@@ -19,11 +21,15 @@ namespace mineru {
 // Build one page's model_list entry (layout_dets + page_info) from scratch: PP-DocLayoutV2
 // region boxes (with reading-order index) + OCR-det text-line boxes (label "ocr_text",
 // empty text — filled later by post-OCR). rgb is the page image (w*h*3), boxes land in
-// image-pixel space. If `mfr` is non-null, display_formula/inline_formula regions are
-// cropped and recognized, attaching a `latex` field.
+// image-pixel space.
+//   mfr       (optional): crop display/inline_formula regions -> attach `latex`.
+//   ocr+table (optional, both required): crop table regions, OCR them, run SLANet+ ->
+//             attach `html` (wireless tables; the wired UNet path is a follow-up).
 nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector& det,
                                 const std::vector<uint8_t>& rgb, int w, int h,
-                                const FormulaRecognizer* mfr = nullptr);
+                                const FormulaRecognizer* mfr = nullptr,
+                                const OcrPipeline* ocr = nullptr,
+                                const TableRecognizer* table_rec = nullptr);
 
 struct PipelinePageImage {
   std::vector<uint8_t> rgb;  // rendered page, w*h*3 RGB8
