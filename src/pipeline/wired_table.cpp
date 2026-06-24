@@ -1,20 +1,23 @@
 // Copyright (c) mlx-mineru.
-// Wired-table UNet — Stage 1: preprocess (keep-ratio bicubic resize to 1024 + normalize) +
-// onnx inference -> line segmentation map. Faithful to MinerU TSRUnet.preprocess/infer.
+// Wired-table UNet — faithful port of MinerU TSRUnet (preprocess -> unet.onnx -> line
+// postprocess -> cell polygons), using the SAME OpenCV (cv2 4.13.0) as MinerU so the cv
+// ops (resize / morphology / connectedComponents / minAreaRect / line) are bit-exact.
 #include "mineru/wired_table.hpp"
 
 #include <algorithm>
 #include <cmath>
 
-#include "mineru/image_preprocess.hpp"  // resize_bicubic_rgb8
 #include "onnxruntime_cxx_api.h"
+
+#ifdef MINERU_HAVE_OPENCV
+#include <opencv2/imgproc.hpp>
+#endif
 
 namespace mineru {
 namespace {
 constexpr int kInp = 1024;
-// UNet normalization (ImageNet-style, RGB).
-const std::array<float, 3> kMean{123.675f, 116.28f, 103.53f};
-const std::array<float, 3> kStd{58.395f, 57.12f, 57.375f};
+const float kMean[3] = {123.675f, 116.28f, 103.53f};
+const float kStd[3] = {58.395f, 57.12f, 57.375f};
 }  // namespace
 
 struct WiredTableRecognizer::Impl {
@@ -39,23 +42,193 @@ WiredTableRecognizer WiredTableRecognizer::load(const std::string& onnx) {
   return r;
 }
 
+#ifdef MINERU_HAVE_OPENCV
+namespace {
+using cv::Mat;
+using cv::Point2f;
+
+// imrescale(img, (1024,1024)): keep aspect, longest side -> 1024, area for shrink else cubic.
+Mat imrescale(const Mat& img) {
+  int h = img.rows, w = img.cols;
+  double sf = std::min((double)kInp / std::max(h, w), (double)kInp / std::min(h, w));
+  // _scale_size: int(x*sf + 0.5)
+  int nw = (int)(w * sf + 0.5), nh = (int)(h * sf + 0.5);
+  int interp = (std::min(h, w) > kInp) ? cv::INTER_AREA : cv::INTER_CUBIC;
+  Mat out;
+  cv::resize(img, out, cv::Size(nw, nh), 0, 0, interp);
+  return out;
+}
+
+// TSRUnet.preprocess on a BGR image -> CHW float [3,nh,nw].
+std::vector<float> preprocess(const Mat& bgr, int& nh, int& nw) {
+  Mat img = imrescale(bgr);
+  img.convertTo(img, CV_32F);
+  cv::cvtColor(img, img, cv::COLOR_BGR2RGB);  // in place
+  Mat mean(1, 3, CV_32F, (void*)kMean), stdv(1, 3, CV_32F, (void*)kStd);
+  cv::subtract(img, cv::Scalar(kMean[0], kMean[1], kMean[2]), img);
+  cv::multiply(img, cv::Scalar(1.0f / kStd[0], 1.0f / kStd[1], 1.0f / kStd[2]), img);
+  nh = img.rows;
+  nw = img.cols;
+  std::vector<float> chw((size_t)3 * nh * nw);
+  std::vector<Mat> ch(3);
+  for (int c = 0; c < 3; ++c) ch[c] = Mat(nh, nw, CV_32F, chw.data() + (size_t)c * nh * nw);
+  cv::split(img, ch);
+  return chw;
+}
+
+double euclid(Point2f a, Point2f b) { return std::hypot(a.x - b.x, a.y - b.y); }
+
+// _order_points -> [tl, tr, br, bl].
+std::array<Point2f, 4> order_points(std::vector<Point2f> p) {
+  std::sort(p.begin(), p.end(), [](Point2f a, Point2f b) { return a.x < b.x; });
+  std::array<Point2f, 2> lm{p[0], p[1]}, rm{p[2], p[3]};
+  if (lm[0].y > lm[1].y) std::swap(lm[0], lm[1]);
+  Point2f tl = lm[0], bl = lm[1];
+  // br,tr = right_most sorted by distance to tl, descending
+  if (euclid(rm[0], tl) < euclid(rm[1], tl)) std::swap(rm[0], rm[1]);
+  Point2f br = rm[0], tr = rm[1];
+  return {tl, tr, br, bl};
+}
+
+// min_area_rect on a line component -> [xmin,ymin,xmax,ymax] centre line (get_table_line).
+std::array<double, 4> line_rect(const std::vector<cv::Point>& coords) {
+  cv::RotatedRect rr = cv::minAreaRect(coords);
+  Point2f bp[4];
+  rr.points(bp);
+  auto o = order_points({bp[0], bp[1], bp[2], bp[3]});
+  double x1 = o[0].x, y1 = o[0].y, x2 = o[1].x, y2 = o[1].y;
+  double x3 = o[2].x, y3 = o[2].y, x4 = o[3].x, y4 = o[3].y;
+  double w = (std::hypot(x2 - x1, y2 - y1) + std::hypot(x3 - x4, y3 - y4)) / 2;
+  double hh = (std::hypot(x2 - x3, y2 - y3) + std::hypot(x1 - x4, y1 - y4)) / 2;
+  if (w < hh) return {(x1 + x2) / 2, (y1 + y2) / 2, (x3 + x4) / 2, (y3 + y4) / 2};
+  return {(x1 + x4) / 2, (y1 + y4) / 2, (x2 + x3) / 2, (y2 + y3) / 2};
+}
+
+// get_table_line: components whose span on the axis exceeds lineW.
+std::vector<std::array<double, 4>> table_lines(const Mat& bin, int axis, int lineW) {
+  Mat labels, stats, cent;
+  Mat mask = bin > 0;
+  int n = cv::connectedComponentsWithStats(mask, labels, stats, cent, 8);
+  std::vector<std::array<double, 4>> lines;
+  for (int id = 1; id < n; ++id) {
+    int W = stats.at<int>(id, cv::CC_STAT_WIDTH), H = stats.at<int>(id, cv::CC_STAT_HEIGHT);
+    int span = (axis == 1) ? H : W;  // axis1 (cols): bbox height; axis0 (rows): bbox width
+    if (span <= lineW) continue;
+    std::vector<cv::Point> pts;
+    cv::findNonZero(labels == id, pts);
+    lines.push_back(line_rect(pts));
+  }
+  return lines;
+}
+
+double dpt(double x1, double y1, double x2, double y2) { return std::hypot(x1 - x2, y1 - y2); }
+
+// adjust_lines: connect nearby collinear endpoints (more_h/v_lines).
+std::vector<std::array<double, 4>> adjust_lines(const std::vector<std::array<double, 4>>& lines,
+                                                double alph, double angle) {
+  std::vector<std::array<double, 4>> out;
+  int n = (int)lines.size();
+  for (int i = 0; i < n; ++i) {
+    double x1 = lines[i][0], y1 = lines[i][1], x2 = lines[i][2], y2 = lines[i][3];
+    double cx1 = (x1 + x2) / 2, cy1 = (y1 + y2) / 2;
+    for (int j = 0; j < n; ++j) {
+      if (i == j) continue;
+      double x3 = lines[j][0], y3 = lines[j][1], x4 = lines[j][2], y4 = lines[j][3];
+      double cx2 = (x3 + x4) / 2, cy2 = (y3 + y4) / 2;
+      if ((x3 < cx1 && cx1 < x4) || (y3 < cy1 && cy1 < y4) || (x1 < cx2 && cx2 < x2) ||
+          (y1 < cy2 && cy2 < y2))
+        continue;
+      auto chk = [&](double ax, double ay, double bx, double by) {
+        double r = dpt(ax, ay, bx, by);
+        double k = std::abs((by - ay) / (bx - ax + 1e-10));
+        double a = std::atan(k) * 180 / M_PI;
+        if (r < alph && a < angle) out.push_back({ax, ay, bx, by});
+      };
+      chk(x1, y1, x3, y3); chk(x1, y1, x4, y4); chk(x2, y2, x3, y3); chk(x2, y2, x4, y4);
+    }
+  }
+  return out;
+}
+
+void fit_line(double x1, double y1, double x2, double y2, double& A, double& B, double& C) {
+  A = y2 - y1; B = x1 - x2; C = x2 * y1 - x1 * y2;
+}
+// line_to_line: extend points1 to its intersection with points2 if an endpoint is within alpha.
+std::array<double, 4> line_to_line(std::array<double, 4> p1, const std::array<double, 4>& p2,
+                                   double alpha, double angle) {
+  double x1 = p1[0], y1 = p1[1], x2 = p1[2], y2 = p1[3];
+  double A1, B1, C1, A2, B2, C2;
+  fit_line(x1, y1, x2, y2, A1, B1, C1);
+  fit_line(p2[0], p2[1], p2[2], p2[3], A2, B2, C2);
+  double f1 = A2 * x1 + B2 * y1 + C2, f2 = A2 * x2 + B2 * y2 + C2;
+  if ((f1 > 0 && f2 > 0) || (f1 < 0 && f2 < 0)) {
+    double den = A1 * B2 - A2 * B1;
+    if (den != 0) {
+      double x = (B1 * C2 - B2 * C1) / den, y = (A2 * C1 - A1 * C2) / den;
+      double r0 = dpt(x, y, x1, y1), r1 = dpt(x, y, x2, y2);
+      if (std::min(r0, r1) < alpha) {
+        if (r0 < r1) {
+          double k = std::abs((y2 - y) / (x2 - x + 1e-10)), a = std::atan(k) * 180 / M_PI;
+          if (a < angle || std::abs(90 - a) < angle) return {x, y, x2, y2};
+        } else {
+          double k = std::abs((y1 - y) / (x1 - x + 1e-10)), a = std::atan(k) * 180 / M_PI;
+          if (a < angle || std::abs(90 - a) < angle) return {x1, y1, x, y};
+        }
+      }
+    }
+  }
+  return p1;
+}
+void final_adjust_lines(std::vector<std::array<double, 4>>& rows,
+                        std::vector<std::array<double, 4>>& cols) {
+  for (size_t i = 0; i < rows.size(); ++i)
+    for (size_t j = 0; j < cols.size(); ++j) {
+      rows[i] = line_to_line(rows[i], cols[j], 20, 30);
+      cols[j] = line_to_line(cols[j], rows[i], 20, 30);
+    }
+}
+
+// cal_region_boxes: connected components of (line_img < 255), filtered, min_area_rect.
+std::vector<std::array<float, 8>> region_boxes(const Mat& line_img) {
+  Mat mask = line_img < 255;
+  Mat labels, stats, cent;
+  int n = cv::connectedComponentsWithStats(mask, labels, stats, cent, 8);
+  double W = line_img.cols, H = line_img.rows;
+  std::vector<std::array<float, 8>> out;
+  for (int id = 1; id < n; ++id) {
+    double barea = (double)stats.at<int>(id, cv::CC_STAT_WIDTH) * stats.at<int>(id, cv::CC_STAT_HEIGHT);
+    if (barea > H * W * 3 / 4) continue;
+    std::vector<cv::Point> pts;
+    cv::findNonZero(labels == id, pts);
+    cv::RotatedRect rr = cv::minAreaRect(pts);
+    Point2f bp[4];
+    rr.points(bp);
+    auto o = order_points({bp[0], bp[1], bp[2], bp[3]});
+    double x1 = o[0].x, y1 = o[0].y, x2 = o[1].x, y2 = o[1].y, x3 = o[2].x, y3 = o[2].y,
+           x4 = o[3].x, y4 = o[3].y;
+    double w = (std::hypot(x2 - x1, y2 - y1) + std::hypot(x3 - x4, y3 - y4)) / 2;
+    double h = (std::hypot(x2 - x3, y2 - y3) + std::hypot(x1 - x4, y1 - y4)) / 2;
+    if (w * h >= 0.5 * W * H) continue;
+    if (w < 15 || h < 15) continue;
+    out.push_back({(float)x1, (float)y1, (float)x2, (float)y2, (float)x3, (float)y3, (float)x4, (float)y4});
+  }
+  return out;
+}
+}  // namespace
+#endif  // MINERU_HAVE_OPENCV
+
 std::vector<uint8_t> WiredTableRecognizer::segment(const std::vector<uint8_t>& rgb, int w, int h,
                                                    int& nh, int& nw) const {
   const Impl& m = *impl_;
-  // imrescale: keep aspect, longest side -> 1024 (rounded).
-  double scale = (double)kInp / std::max(w, h);
-  nw = (int)(w * scale + 0.5);
-  nh = (int)(h * scale + 0.5);
-  std::vector<uint8_t> resized = resize_bicubic_rgb8(rgb, w, h, nw, nh);
-
-  // NormalizeImage (RGB), CHW.
-  std::vector<float> input(static_cast<size_t>(3) * nh * nw);
-  for (int y = 0; y < nh; ++y)
-    for (int x = 0; x < nw; ++x)
-      for (int c = 0; c < 3; ++c)
-        input[(static_cast<size_t>(c) * nh + y) * nw + x] =
-            (resized[(static_cast<size_t>(y) * nw + x) * 3 + c] - kMean[c]) / kStd[c];
-
+#ifdef MINERU_HAVE_OPENCV
+  cv::Mat rgbm(h, w, CV_8UC3, (void*)rgb.data()), bgr;
+  cv::cvtColor(rgbm, bgr, cv::COLOR_RGB2BGR);
+  std::vector<float> input = preprocess(bgr, nh, nw);
+#else
+  (void)rgb; (void)w; (void)h; (void)nh; (void)nw;
+  std::vector<float> input;
+  return {};
+#endif
   std::array<int64_t, 4> ishape{1, 3, nh, nw};
   Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
   Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
@@ -63,7 +236,6 @@ std::vector<uint8_t> WiredTableRecognizer::segment(const std::vector<uint8_t>& r
   const char* out_names[] = {m.out_name.c_str()};
   auto outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
                                                         out_names, 1);
-  // Output [1,1,nh,nw] int64 -> uint8 seg map.
   auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
   int oh = (int)oshape[oshape.size() - 2], ow = (int)oshape[oshape.size() - 1];
   const int64_t* seg = outs[0].GetTensorData<int64_t>();
@@ -74,234 +246,38 @@ std::vector<uint8_t> WiredTableRecognizer::segment(const std::vector<uint8_t>& r
   return out;
 }
 
-// ---- Stage 2: segmentation -> cell polygons --------------------------------
-namespace {
-using Mask = std::vector<uint8_t>;  // H*W, row-major
-
-// Nearest-neighbour resize of a label mask to (ow,oh) — matches cv2.resize on label maps
-// closely enough for line topology (the seg is then thresholded >0).
-Mask resize_mask(const Mask& m, int iw, int ih, int ow, int oh) {
-  Mask o((size_t)ow * oh);
-  for (int y = 0; y < oh; ++y) {
-    int sy = std::min(ih - 1, (int)((y + 0.5) * ih / oh));
-    for (int x = 0; x < ow; ++x) {
-      int sx = std::min(iw - 1, (int)((x + 0.5) * iw / ow));
-      o[(size_t)y * ow + x] = m[(size_t)sy * iw + sx];
-    }
-  }
-  return o;
-}
-
-// Morphological close (dilate then erode) with a rect kernel (kw x kh), binary mask.
-Mask morph_close(const Mask& m, int W, int H, int kw, int kh) {
-  auto dil = [&](const Mask& s) {
-    Mask r((size_t)W * H, 0);
-    int ax = kw / 2, ay = kh / 2;
-    for (int y = 0; y < H; ++y)
-      for (int x = 0; x < W; ++x) {
-        if (!s[(size_t)y * W + x]) continue;
-        for (int dy = -ay; dy <= kh - 1 - ay; ++dy)
-          for (int dx = -ax; dx <= kw - 1 - ax; ++dx) {
-            int ny = y + dy, nx = x + dx;
-            if (ny >= 0 && ny < H && nx >= 0 && nx < W) r[(size_t)ny * W + nx] = 1;
-          }
-      }
-    return r;
-  };
-  auto ero = [&](const Mask& s) {
-    Mask r((size_t)W * H, 0);
-    int ax = kw / 2, ay = kh / 2;
-    for (int y = 0; y < H; ++y)
-      for (int x = 0; x < W; ++x) {
-        bool all = true;
-        for (int dy = -ay; dy <= kh - 1 - ay && all; ++dy)
-          for (int dx = -ax; dx <= kw - 1 - ax && all; ++dx) {
-            int ny = y + dy, nx = x + dx;
-            if (ny < 0 || ny >= H || nx < 0 || nx >= W || !s[(size_t)ny * W + nx]) all = false;
-          }
-        r[(size_t)y * W + x] = all ? 1 : 0;
-      }
-    return r;
-  };
-  return ero(dil(m));
-}
-
-struct Pt { double x, y; };
-// 8-connected components -> per-component pixel coords + bbox.
-struct Comp { std::vector<Pt> coords; int x0, y0, x1, y1; };
-std::vector<Comp> connected(const Mask& m, int W, int H) {
-  std::vector<int> lab((size_t)W * H, 0);
-  std::vector<Comp> out;
-  std::vector<std::pair<int, int>> st;
-  const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1}, dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-  int next = 0;
-  for (int y = 0; y < H; ++y)
-    for (int x = 0; x < W; ++x) {
-      if (!m[(size_t)y * W + x] || lab[(size_t)y * W + x]) continue;
-      ++next;
-      st.clear();
-      st.push_back({x, y});
-      lab[(size_t)y * W + x] = next;
-      Comp c{{}, x, y, x, y};
-      while (!st.empty()) {
-        auto [cx, cy] = st.back();
-        st.pop_back();
-        c.coords.push_back({(double)cx, (double)cy});
-        c.x0 = std::min(c.x0, cx); c.y0 = std::min(c.y0, cy);
-        c.x1 = std::max(c.x1, cx); c.y1 = std::max(c.y1, cy);
-        for (int k = 0; k < 8; ++k) {
-          int nx = cx + dx[k], ny = cy + dy[k];
-          if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
-          size_t ni = (size_t)ny * W + nx;
-          if (m[ni] && !lab[ni]) { lab[ni] = next; st.push_back({nx, ny}); }
-        }
-      }
-      out.push_back(std::move(c));
-    }
-  return out;
-}
-
-// minAreaRect (rotating calipers) -> 4 corner points (cv2.boxPoints order-agnostic).
-std::array<Pt, 4> min_area_rect(const std::vector<Pt>& pts) {
-  // convex hull (Andrew monotone chain)
-  std::vector<Pt> p = pts;
-  std::sort(p.begin(), p.end(), [](const Pt& a, const Pt& b) {
-    return a.x < b.x || (a.x == b.x && a.y < b.y);
-  });
-  p.erase(std::unique(p.begin(), p.end(), [](const Pt& a, const Pt& b) {
-            return a.x == b.x && a.y == b.y;
-          }), p.end());
-  int n = (int)p.size(), k = 0;
-  std::vector<Pt> hull(2 * n);
-  auto cross = [](const Pt& O, const Pt& A, const Pt& B) {
-    return (A.x - O.x) * (B.y - O.y) - (A.y - O.y) * (B.x - O.x);
-  };
-  if (n < 3) { return {p[0], p[0], n > 1 ? p[1] : p[0], n > 1 ? p[1] : p[0]}; }
-  for (int i = 0; i < n; ++i) { while (k >= 2 && cross(hull[k - 2], hull[k - 1], p[i]) <= 0) k--; hull[k++] = p[i]; }
-  for (int i = n - 2, t = k + 1; i >= 0; --i) { while (k >= t && cross(hull[k - 2], hull[k - 1], p[i]) <= 0) k--; hull[k++] = p[i]; }
-  hull.resize(k - 1);
-  double best = 1e300;
-  std::array<Pt, 4> box{};
-  int m = (int)hull.size();
-  for (int i = 0; i < m; ++i) {
-    Pt a = hull[i], b = hull[(i + 1) % m];
-    double ex = b.x - a.x, ey = b.y - a.y, len = std::hypot(ex, ey);
-    if (len < 1e-9) continue;
-    double ux = ex / len, uy = ey / len, vx = -uy, vy = ux;
-    double minu = 1e300, maxu = -1e300, minv = 1e300, maxv = -1e300;
-    for (const Pt& q : hull) {
-      double du = (q.x - a.x) * ux + (q.y - a.y) * uy, dv = (q.x - a.x) * vx + (q.y - a.y) * vy;
-      minu = std::min(minu, du); maxu = std::max(maxu, du);
-      minv = std::min(minv, dv); maxv = std::max(maxv, dv);
-    }
-    double area = (maxu - minu) * (maxv - minv);
-    if (area < best) {
-      best = area;
-      auto corner = [&](double cu, double cv) {
-        return Pt{a.x + cu * ux + cv * vx, a.y + cu * uy + cv * vy};
-      };
-      box = {corner(minu, minv), corner(maxu, minv), corner(maxu, maxv), corner(minu, maxv)};
-    }
-  }
-  return box;
-}
-
-// _order_points: tl (min sum), br (max sum), tr (min diff y-x), bl (max diff).
-std::array<Pt, 4> order_points(std::array<Pt, 4> p) {
-  std::array<Pt, 4> o;
-  int tl = 0, br = 0, tr = 0, bl = 0;
-  double smin = 1e300, smax = -1e300, dmin = 1e300, dmax = -1e300;
-  for (int i = 0; i < 4; ++i) {
-    double s = p[i].x + p[i].y, d = p[i].y - p[i].x;
-    if (s < smin) { smin = s; tl = i; }
-    if (s > smax) { smax = s; br = i; }
-    if (d < dmin) { dmin = d; tr = i; }
-    if (d > dmax) { dmax = d; bl = i; }
-  }
-  o = {p[tl], p[tr], p[br], p[bl]};
-  return o;
-}
-
-// min_area_rect for a line component -> [xmin,ymin,xmax,ymax] center line (get_table_line).
-std::array<double, 4> line_rect(const std::vector<Pt>& coords) {
-  auto box = order_points(min_area_rect(coords));
-  double x1 = box[0].x, y1 = box[0].y, x2 = box[1].x, y2 = box[1].y;
-  double x3 = box[2].x, y3 = box[2].y, x4 = box[3].x, y4 = box[3].y;
-  double w = (std::hypot(x2 - x1, y2 - y1) + std::hypot(x3 - x4, y3 - y4)) / 2;
-  double h = (std::hypot(x2 - x3, y2 - y3) + std::hypot(x1 - x4, y1 - y4)) / 2;
-  if (w < h)
-    return {(x1 + x2) / 2, (y1 + y2) / 2, (x3 + x4) / 2, (y3 + y4) / 2};
-  return {(x1 + x4) / 2, (y1 + y4) / 2, (x2 + x3) / 2, (y2 + y3) / 2};
-}
-
-// get_table_line: line components whose bbox span on the given axis exceeds lineW.
-std::vector<std::array<double, 4>> table_lines(const Mask& bin, int W, int H, int axis, int lineW) {
-  std::vector<std::array<double, 4>> lines;
-  for (auto& c : connected(bin, W, H)) {
-    int span = (axis == 1) ? (c.x1 - c.x0) : (c.y1 - c.y0);  // axis1: vertical (x span? per src)
-    // per source: axis==1 uses bbox[2]-bbox[0] (rows), axis==0 uses bbox[3]-bbox[1] (cols).
-    span = (axis == 1) ? (c.y1 - c.y0) : (c.x1 - c.x0);
-    if (span > lineW) lines.push_back(line_rect(c.coords));
-  }
-  return lines;
-}
-
-// draw a thick line (no anti-alias) of value 255 into mask.
-void draw_line(Mask& im, int W, int H, double x1, double y1, double x2, double y2, int lw) {
-  int steps = (int)std::max(std::abs(x2 - x1), std::abs(y2 - y1)) + 1;
-  int r = lw / 2;
-  for (int s = 0; s <= steps; ++s) {
-    double t = (double)s / steps;
-    int px = (int)std::lround(x1 + t * (x2 - x1)), py = (int)std::lround(y1 + t * (y2 - y1));
-    for (int dy = -r; dy <= r; ++dy)
-      for (int dx = -r; dx <= r; ++dx) {
-        int nx = px + dx, ny = py + dy;
-        if (nx >= 0 && ny >= 0 && nx < W && ny < H) im[(size_t)ny * W + nx] = 255;
-      }
-  }
-}
-}  // namespace
-
 std::vector<std::array<float, 8>> WiredTableRecognizer::cell_polygons(
     const std::vector<uint8_t>& rgb, int w, int h) const {
+#ifdef MINERU_HAVE_OPENCV
   int nh, nw;
   std::vector<uint8_t> seg = segment(rgb, w, h, nh, nw);
-  // Split horizontal (==1) / vertical (==2), resize to original crop size.
-  Mask hp((size_t)nh * nw), vp((size_t)nh * nw);
-  for (size_t i = 0; i < hp.size(); ++i) { hp[i] = seg[i] == 1 ? 1 : 0; vp[i] = seg[i] == 2 ? 1 : 0; }
-  hp = resize_mask(hp, nw, nh, w, h);
-  vp = resize_mask(vp, nw, nh, w, h);
-  // Morphology close: kernels sized like MinerU (sqrt(dim)*1.2).
-  int hk = (int)(std::sqrt((double)nw) * 1.2), vk = (int)(std::sqrt((double)nh) * 1.2);
-  vp = morph_close(vp, w, h, 1, std::max(1, vk));
-  hp = morph_close(hp, w, h, std::max(1, hk), 1);
-  // Extract lines.
-  auto cols = table_lines(vp, w, h, 1, 30);
-  auto rows = table_lines(hp, w, h, 0, 50);
-  // Draw all lines into a fresh canvas, then cells = connected components of (img < 255).
-  Mask line_img((size_t)w * h, 0);
-  for (auto& l : rows) draw_line(line_img, w, h, l[0], l[1], l[2], l[3], 2);
-  for (auto& l : cols) draw_line(line_img, w, h, l[0], l[1], l[2], l[3], 2);
-  Mask cellmask((size_t)w * h);
-  for (size_t i = 0; i < cellmask.size(); ++i) cellmask[i] = line_img[i] < 255 ? 1 : 0;
-  // cal_region_boxes: components, filter big (>3/4 area) + small (<15px), min_area_rect.
-  std::vector<std::array<float, 8>> out;
-  double area = (double)w * h;
-  for (auto& c : connected(cellmask, w, h)) {
-    double barea = (double)(c.x1 - c.x0) * (c.y1 - c.y0);
-    if (barea > area * 3 / 4) continue;
-    auto box = order_points(min_area_rect(c.coords));
-    double bw = (std::hypot(box[1].x - box[0].x, box[1].y - box[0].y) +
-                 std::hypot(box[2].x - box[3].x, box[2].y - box[3].y)) / 2;
-    double bh = (std::hypot(box[1].x - box[2].x, box[1].y - box[2].y) +
-                 std::hypot(box[0].x - box[3].x, box[0].y - box[3].y)) / 2;
-    if (bw * bh >= 0.5 * area) continue;
-    if (bw < 15 || bh < 15) continue;
-    out.push_back({(float)box[0].x, (float)box[0].y, (float)box[1].x, (float)box[1].y,
-                   (float)box[2].x, (float)box[2].y, (float)box[3].x, (float)box[3].y});
-  }
-  return out;
+  // hpred (==1), vpred (==2); zero the other; resize to original crop size.
+  cv::Mat hp(nh, nw, CV_8U), vp(nh, nw, CV_8U);
+  for (int i = 0; i < nh * nw; ++i) { hp.data[i] = seg[i] == 1 ? 1 : 0; vp.data[i] = seg[i] == 2 ? 1 : 0; }
+  cv::resize(hp, hp, cv::Size(w, h));
+  cv::resize(vp, vp, cv::Size(w, h));
+  int hors_k = (int)(std::sqrt((double)nw) * 1.2), vert_k = (int)(std::sqrt((double)nh) * 1.2);
+  cv::Mat hk = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(std::max(1, hors_k), 1));
+  cv::Mat vk = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(1, std::max(1, vert_k)));
+  cv::morphologyEx(vp, vp, cv::MORPH_CLOSE, vk, cv::Point(-1, -1), 1);
+  cv::morphologyEx(hp, hp, cv::MORPH_CLOSE, hk, cv::Point(-1, -1), 1);
+  auto cols = table_lines(vp, 1, 30);
+  auto rows = table_lines(hp, 0, 50);
+  auto rrow = adjust_lines(rows, 100, 50);
+  auto rcol = adjust_lines(cols, 15, 50);
+  rows.insert(rows.end(), rrow.begin(), rrow.end());
+  cols.insert(cols.end(), rcol.begin(), rcol.end());
+  final_adjust_lines(rows, cols);
+  cv::Mat line_img = cv::Mat::zeros(h, w, CV_8U);
+  for (auto& l : rows)
+    cv::line(line_img, {(int)l[0], (int)l[1]}, {(int)l[2], (int)l[3]}, 255, 2, cv::LINE_AA);
+  for (auto& l : cols)
+    cv::line(line_img, {(int)l[0], (int)l[1]}, {(int)l[2], (int)l[3]}, 255, 2, cv::LINE_AA);
+  return region_boxes(line_img);
+#else
+  (void)rgb; (void)w; (void)h;
+  return {};
+#endif
 }
 
 }  // namespace mineru
-

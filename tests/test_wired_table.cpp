@@ -52,8 +52,8 @@ int main(int argc, char** argv) {
   double frac = (double)diff / n;
   std::cerr << "wired seg: " << diff << "/" << n << " px differ (" << frac * 100 << "%), "
             << line_diff << " involve line pixels\n";
-  // The seg is argmax; near-boundary line pixels can flip with the bicubic-resize LSB.
-  CHECK_MSG(frac < 0.01, "segmentation matches MinerU within 1% (boundary LSB)");
+  // Using the same OpenCV (cv2 4.13.0) as MinerU -> the segmentation is bit-exact.
+  CHECK_MSG(diff == 0, "segmentation byte-exact vs MinerU");
 
   // Stage 2: cell polygons. Compare against the golden cell bboxes (need_ocr=False ->
   // [x0,y0,x1,y1] per cell). MinerU also emits a few thin edge-sliver cells (between the
@@ -78,11 +78,11 @@ int main(int argc, char** argv) {
     for (auto& wc : wantc)
       best = std::min(best, std::abs(gx0 - wc[0]) + std::abs(gy0 - wc[1]) + std::abs(gx1 - wc[2]) +
                                 std::abs(gy1 - wc[3]));
-    if (best <= 12) ++matched;  // ~3px/edge
+    if (best <= 4) ++matched;  // ~1px/edge (minAreaRect float vs golden ints)
   }
   std::cerr << "wired cells: " << matched << "/" << cells.size()
-            << " match a golden cell within ~3px/edge\n";
-  CHECK_MSG(cells.size() >= 12, "extracts a plausible cell grid");
-  CHECK_MSG(matched >= (int)cells.size() - 1, "produced cells align with MinerU's grid");
+            << " match a golden cell within ~1px/edge\n";
+  CHECK_MSG((int)cells.size() == ncell, "cell count matches MinerU exactly");
+  CHECK_MSG(matched == (int)cells.size(), "all cells match MinerU's grid (bit-exact cv2)");
   return TEST_SUMMARY();
 }

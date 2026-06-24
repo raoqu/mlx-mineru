@@ -86,6 +86,23 @@ else()
   set(HAVE_ORT FALSE)
 endif()
 
+# ---- OpenCV (optional; bit-exact cv2 ops for the wired-table UNet path) ------
+# Used so the wired-table postprocess uses the SAME OpenCV as MinerU (cv2 4.13.0)
+# instead of reimplemented primitives. Resolved via Homebrew if present.
+foreach(_ocv_hint /opt/homebrew/opt/opencv /usr/local/opt/opencv)
+  if(EXISTS ${_ocv_hint}/lib/cmake/opencv4)
+    list(APPEND CMAKE_PREFIX_PATH ${_ocv_hint})
+  endif()
+endforeach()
+find_package(OpenCV QUIET COMPONENTS core imgproc)
+if(OpenCV_FOUND)
+  set(HAVE_OPENCV TRUE)
+  message(STATUS "Found OpenCV ${OpenCV_VERSION} at ${OpenCV_INSTALL_PATH}")
+else()
+  set(HAVE_OPENCV FALSE)
+  message(STATUS "OpenCV not found; wired-table UNet path uses reimplemented cv ops")
+endif()
+
 # ---- Core library ------------------------------------------------------------
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
@@ -194,6 +211,11 @@ if(HAVE_ORT)
   add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp src/pipeline/wired_table.cpp)
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pipeline PUBLIC onnxruntime mineru_vlm mineru_core thirdparty_headers)
+  if(HAVE_OPENCV)
+    target_link_libraries(mineru_pipeline PUBLIC ${OpenCV_LIBS})
+    target_include_directories(mineru_pipeline PUBLIC ${OpenCV_INCLUDE_DIRS})
+    target_compile_definitions(mineru_pipeline PUBLIC MINERU_HAVE_OPENCV=1)
+  endif()
 endif()
 
 add_executable(test_tokenizer tests/test_tokenizer.cpp)
