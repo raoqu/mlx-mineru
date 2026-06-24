@@ -14,7 +14,9 @@
 #include "mineru/ocr_det.hpp"
 #include "mineru/ocr_rec.hpp"
 #include "mineru/pipeline_assemble.hpp"  // PageChar
+#include "mineru/table_cls.hpp"
 #include "mineru/table_rec.hpp"
+#include "mineru/wired_table.hpp"
 #include "nlohmann/json.hpp"
 
 namespace mineru {
@@ -25,12 +27,17 @@ namespace mineru {
 // image-pixel space.
 //   mfr       (optional): crop display/inline_formula regions -> attach `latex`.
 //   ocr+table (optional, both required): crop table regions, OCR them, run SLANet+ ->
-//             attach `html` (wireless tables; the wired UNet path is a follow-up).
+//             attach `html`.
+//   table_cls + wired_rec (optional, both required): classify each table; for wired (or
+//             low-confidence wireless) tables also run the UNet and pick the better HTML,
+//             matching MinerU's wired/wireless selection.
 nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector& det,
                                 const std::vector<uint8_t>& rgb, int w, int h,
                                 const FormulaRecognizer* mfr = nullptr,
                                 const OcrPipeline* ocr = nullptr,
-                                const TableRecognizer* table_rec = nullptr);
+                                const TableRecognizer* table_rec = nullptr,
+                                const TableClassifier* table_cls = nullptr,
+                                const WiredTableRecognizer* wired_rec = nullptr);
 
 struct PipelinePageImage {
   std::vector<uint8_t> rgb;  // rendered page, w*h*3 RGB8

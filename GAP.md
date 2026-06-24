@@ -37,7 +37,7 @@
 | OCR 识别（CTC SVTR） | ✅ | ✅ | 文本逐字一致 |
 | OCR 整链（sort/merge/crop/batch） | ✅ | ✅ | 19/19 行，18/19 文本精确 |
 | 公式识别 MFR（UniMERNet） | ✅ | ✅ | greedy 逐 token bit-exact |
-| 表格分类（有/无线） | ✅ | ✅ | argmax 一致 |
+| 表格分类（有/无线）+ 路由 | ✅ | ✅ | argmax 一致；driver 按分类路由 SLANet+/UNet 并择优（对齐 batch_analyze） |
 | 无线表格结构 SLANet+ → HTML | ✅ | ✅ | 结构 token 精确，HTML 与 MinerU 一致 |
 | 装配 MagicModel（文本/标题路径） | ✅ | ✅ | a.pdf p0 全 10 块结构精确 |
 | 后置 OCR 取字（post-OCR text-fill） | ✅ | ✅ | 全 span 填充，ASCII 精确 |

@@ -475,6 +475,8 @@ struct PipelineModels {
   std::unique_ptr<mineru::FormulaRecognizer> mfr;
   std::unique_ptr<mineru::OcrPipeline> table_ocr;
   std::unique_ptr<mineru::TableRecognizer> table_rec;
+  std::unique_ptr<mineru::TableClassifier> table_cls;
+  std::unique_ptr<mineru::WiredTableRecognizer> wired_rec;
 };
 
 static PipelineModels load_pipeline_models(const std::string& models) {
@@ -496,6 +498,15 @@ static PipelineModels load_pipeline_models(const std::string& models) {
     pm.table_rec = std::make_unique<mineru::TableRecognizer>(mineru::TableRecognizer::load(
         slanet, models + "/TabRec/SlanetPlus/table_structure_dict.txt"));
     std::cerr << "[mlx-mineru] table recognizer loaded (wireless/SLANet+)\n";
+    // Optional wired-table path: classifier routes wired tables to the UNet structure model.
+    std::string tcls = models + "/TabCls/PP-LCNet_x1_0_table_cls.onnx";
+    std::string unet = models + "/TabRec/UnetStructure/unet.onnx";
+    if (fsx::exists(tcls) && fsx::exists(unet)) {
+      pm.table_cls = std::make_unique<mineru::TableClassifier>(mineru::TableClassifier::load(tcls));
+      pm.wired_rec = std::make_unique<mineru::WiredTableRecognizer>(
+          mineru::WiredTableRecognizer::load(unet));
+      std::cerr << "[mlx-mineru] table classifier + wired/UNet recognizer loaded\n";
+    }
   }
   return pm;
 }
@@ -509,7 +520,8 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
   for (int p = s; p <= e; ++p) {
     mineru::PageImage im = doc.render_page(p, dpi);
     model_list.push_back(mineru::build_page_model(*pm.layout, *pm.det, im.rgb, im.width, im.height,
-                                                  pm.mfr.get(), pm.table_ocr.get(), pm.table_rec.get()));
+                                                  pm.mfr.get(), pm.table_ocr.get(), pm.table_rec.get(),
+                                                  pm.table_cls.get(), pm.wired_rec.get()));
     mineru::PipelinePageImage pg;
     pg.page_w = (int)std::lround(im.width_pt);
     pg.page_h = (int)std::lround(im.height_pt);
@@ -665,13 +677,15 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
       mineru::FormulaRecognizer* mfr = o.formula_enable ? pl->mfr.get() : nullptr;
       mineru::OcrPipeline* tocr = o.table_enable ? pl->table_ocr.get() : nullptr;
       mineru::TableRecognizer* trec = o.table_enable ? pl->table_rec.get() : nullptr;
+      mineru::TableClassifier* tcls = o.table_enable ? pl->table_cls.get() : nullptr;
+      mineru::WiredTableRecognizer* wrec = o.table_enable ? pl->wired_rec.get() : nullptr;
       json model_list = json::array();
       std::vector<mineru::PipelinePageImage> pages;
       std::vector<std::pair<int, int>> dims;  // (w,h) per page for cropping
       for (int p = 0; p <= e; ++p) {
         mineru::PageImage im = doc.render_page(p, dpi);
         model_list.push_back(mineru::build_page_model(*pl->layout, *pl->det, im.rgb, im.width,
-                                                      im.height, mfr, tocr, trec));
+                                                      im.height, mfr, tocr, trec, tcls, wrec));
         mineru::PipelinePageImage pg;
         pg.page_w = (int)std::lround(im.width_pt);
         pg.page_h = (int)std::lround(im.height_pt);

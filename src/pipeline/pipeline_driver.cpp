@@ -4,11 +4,120 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cmath>
+#include <string>
 
 #include "mineru/pipeline_assemble.hpp"
 #include "mineru/post_ocr.hpp"
 
 namespace mineru {
+
+// Keep only <table>..</table> (drop the SLANet/UNet <html><body> wrapper), matching MinerU.
+static std::string strip_table_wrapper(std::string html) {
+  size_t st = html.find("<table>"), en = html.rfind("</table>");
+  if (st != std::string::npos && en != std::string::npos) html = html.substr(st, en + 8 - st);
+  return html;
+}
+
+// --- Wired/wireless HTML selection heuristic (faithful to UnetTableModel.predict) ----------
+// MinerU runs SLANet+ (wireless) on every table, then for tables the classifier marks wired
+// (or wireless with low confidence) also runs the UNet (wired) model and picks the better of
+// the two HTMLs by physical/non-blank cell counts and OCR-text coverage.
+
+// Python3 round(): round-half-to-even. Inputs here are non-negative.
+static long py_round(double x) {
+  double f = std::floor(x), d = x - f;
+  if (d < 0.5) return (long)f;
+  if (d > 0.5) return (long)f + 1;
+  long fi = (long)f;
+  return (fi % 2 == 0) ? fi : fi + 1;
+}
+
+// count_table_cells_physical: non-overlapping "<td" + "<th" occurrences in the lowercased
+// HTML (intentionally identical to MinerU, including the harmless <thead> over-count).
+static int count_cells_physical(const std::string& html) {
+  std::string l(html.size(), '\0');
+  for (size_t i = 0; i < html.size(); ++i) l[i] = (char)std::tolower((unsigned char)html[i]);
+  int n = 0;
+  for (const char* sub : {"<td", "<th"}) {
+    for (size_t p = l.find(sub); p != std::string::npos; p = l.find(sub, p + 3)) ++n;
+  }
+  return n;
+}
+
+// Inner text of each real <td>/<th> element, tags stripped and whitespace-trimmed (≈
+// BeautifulSoup cell.text.strip()). Excludes <thead>/<tbody> (tag name must end at the cell).
+static std::vector<std::string> cell_texts(const std::string& html) {
+  std::vector<std::string> out;
+  std::string l(html.size(), '\0');
+  for (size_t i = 0; i < html.size(); ++i) l[i] = (char)std::tolower((unsigned char)html[i]);
+  size_t p = 0;
+  while (p < l.size()) {
+    size_t lt = l.find('<', p);
+    if (lt == std::string::npos) break;
+    bool td = l.compare(lt, 3, "<td") == 0, th = l.compare(lt, 3, "<th") == 0;
+    char after = lt + 3 < l.size() ? l[lt + 3] : '\0';
+    if ((td || th) && (after == '>' || after == ' ' || after == '/' || after == '\t')) {
+      size_t gt = l.find('>', lt);
+      if (gt == std::string::npos) break;
+      const char* close = td ? "</td" : "</th";
+      size_t end = l.find(close, gt);
+      std::string inner = (end == std::string::npos) ? html.substr(gt + 1)
+                                                     : html.substr(gt + 1, end - gt - 1);
+      // strip nested tags
+      std::string txt;
+      bool intag = false;
+      for (char c : inner) {
+        if (c == '<') intag = true;
+        else if (c == '>') intag = false;
+        else if (!intag) txt += c;
+      }
+      size_t b = txt.find_first_not_of(" \t\r\n");
+      size_t e = txt.find_last_not_of(" \t\r\n");
+      out.push_back(b == std::string::npos ? std::string() : txt.substr(b, e - b + 1));
+      p = (end == std::string::npos) ? l.size() : end + 4;
+    } else {
+      p = lt + 1;
+    }
+  }
+  return out;
+}
+
+// Return the chosen HTML between wired (UNet) and wireless (SLANet+). Falls back to wireless
+// under the same conditions as MinerU's UnetTableModel.predict.
+static std::string choose_table_html(const std::string& wired, const std::string& wireless,
+                                     const std::vector<TableOcrItem>& items) {
+  if (wired.empty()) return wireless;
+  int wired_len = count_cells_physical(wired), wireless_len = count_cells_physical(wireless);
+  int gap_of_len = wireless_len - wired_len;
+  int wired_text = 0, wireless_text = 0;
+  for (const TableOcrItem& it : items) {
+    if (!it.text.empty() && wired.find(it.text) != std::string::npos) ++wired_text;
+    if (!it.text.empty() && wireless.find(it.text) != std::string::npos) ++wireless_text;
+  }
+  auto blanks = [](const std::vector<std::string>& cs) {
+    int b = 0;
+    for (const std::string& c : cs) if (c.empty()) ++b;
+    return b;
+  };
+  std::vector<std::string> wired_cells = cell_texts(wired), wireless_cells = cell_texts(wireless);
+  int wired_non_blank = (int)wired_cells.size() - blanks(wired_cells);
+  int wireless_non_blank = (int)wireless_cells.size() - blanks(wireless_cells);
+  bool switch_flag = false;
+  if (wireless_non_blank > wired_non_blank) {
+    long scale = py_round(std::sqrt((double)wired_non_blank));
+    long plus_2_cols = wired_non_blank + scale * 2;
+    long sq_plus_2_rows = scale * (scale + 2);
+    if ((long)(wireless_non_blank + 3) >= std::max(plus_2_cols, sq_plus_2_rows)) switch_flag = true;
+  }
+  bool to_wireless =
+      switch_flag ||
+      (gap_of_len >= 0 && gap_of_len <= 5 && wired_len <= py_round(wireless_len * 0.75)) ||
+      (gap_of_len == 0 && wired_len <= 4) ||
+      (wired_text <= wireless_text * 0.6 && wireless_text >= 10);
+  return to_wireless ? wireless : wired;
+}
 
 // Crop an axis-aligned region [x0,y0,x1,y1] (image pixels) into a fresh RGB buffer.
 static std::vector<uint8_t> crop_rgb(const std::vector<uint8_t>& rgb, int w, int h,
@@ -28,7 +137,9 @@ static std::vector<uint8_t> crop_rgb(const std::vector<uint8_t>& rgb, int w, int
 nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector& det,
                                 const std::vector<uint8_t>& rgb, int w, int h,
                                 const FormulaRecognizer* mfr, const OcrPipeline* ocr,
-                                const TableRecognizer* table_rec) {
+                                const TableRecognizer* table_rec,
+                                const TableClassifier* table_cls,
+                                const WiredTableRecognizer* wired_rec) {
   nlohmann::json dets = nlohmann::json::array();
   // Region boxes (reading-order index already assigned by the detector).
   for (const LayoutBox& b : layout.detect(rgb, w, h)) {
@@ -46,11 +157,20 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
         std::vector<TableOcrItem> items;
         for (const OcrLine& ln : ocr->run(crop, cw, ch))
           items.push_back({ln.box, ln.text, ln.score});
-        html = table_rec->recognize_html(crop, cw, ch, items);
-        // MinerU keeps only <table>..</table> (strips the <html><body> wrapper).
-        size_t st = html.find("<table>"), en = html.rfind("</table>");
-        if (st != std::string::npos && en != std::string::npos)
-          html = html.substr(st, en + 8 - st);
+        // Always run SLANet+ (wireless) first; MinerU sets this as the table's HTML.
+        std::string wireless = strip_table_wrapper(table_rec->recognize_html(crop, cw, ch, items));
+        html = wireless;
+        // Route to the UNet (wired) model when the classifier says wired, or wireless with low
+        // confidence (<0.9) — then pick the better of wired/wireless. Faithful to batch_analyze.
+        if (table_cls && wired_rec && !items.empty()) {
+          TableClsResult cls = table_cls->classify(crop, cw, ch);
+          bool wired_candidate = cls.label == "wired_table" ||
+                                 (cls.label == "wireless_table" && cls.score < 0.9f);
+          if (wired_candidate) {
+            std::string wired = strip_table_wrapper(wired_rec->recognize_html(crop, cw, ch, items));
+            html = choose_table_html(wired, wireless, items);
+          }
+        }
       }
       d["html"] = html;
     }

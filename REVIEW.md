@@ -29,7 +29,7 @@
 | 版面检测（PP-DocLayoutV2，含阅读序） | batch_analyze 版面推理 | `LayoutDetector`（layout.onnx，硬编码标签表） | ✅ |
 | 公式 MFD/MFR | display/inline_formula→UniMERNet | `FormulaRecognizer`（mfr_*.onnx） | ✅ 逐位一致 |
 | OCR det/rec | DBNet + SVTR_LCNet（PP-OCRv6） | `TextDetector`/`TextRecognizer`，含 batch、sorted/merge | ✅（cv2 几何逐位一致） |
-| 表格 cls→rec | 方向/有无线分类 → SLANet+ 或 UNet | 无线 SLANet+ ✅ / 有线 UNet ✅（5 阶段）/ **分类路由未接** | 🟡 未跑 TableClassifier 路由 |
+| 表格 cls→rec | 方向/有无线分类 → SLANet+ 或 UNet（跑两者择优） | 🔧 SLANet+ 全量 + TableClassifier 路由 + UNet（有线/低置信无线）+ 择优启发式 | ✅ 路由对齐 batch_analyze |
 | 数字取字 / OCR 选择 | `_get_ocr_enable`（auto/ocr） | `is_ocr` 选项 🔧 + 数字层 `fill_chars_in_page` / 回落 OCR | ✅ |
 | middle_json（magic_model） | result_to_middle_json（span 预处理、阅读序、para_split、视觉块嵌套、丢弃块） | `pipeline_assemble.cpp`（贪心 span 匹配、classify_visual_blocks、para_split、formula_number→\tag） | 🟡 见下「未实现」 |
 | union_make | pipeline_middle_json_mkcontent | `mkcontent.cpp`（VLM 版 union_make，签名带 formula/table_enable） | 🟡 见 §4 |
@@ -38,8 +38,15 @@
 **未实现（已记录）**：
 - ⬜ `cross_page_table_merge`（跨页表格合并）— finalize_middle_json 步骤。
 - ⬜ `apply_title_leveling`（标题分级）— 当前 paragraph_title 一律 level 2。
-- ⬜ 表格方向/有无线**分类路由**（TableClassifier 已实现但未在 driver 中按分类选 SLANet/UNet）。
 - 🟡 magic_model 的复杂 span 关联用「贪心重叠匹配」近似（a.pdf/demo 验证下与 MinerU 一致）。
+
+**🔧 本轮：表格有无线分类路由（对齐 `batch_analyze` + `UnetTableModel.predict`）**
+- 所有表格先跑 SLANet+（无线）→ `wireless_html`。
+- 分类器判定 `wired_table`、或 `wireless_table` 且 `score<0.9` → 再跑 UNet（有线）→ `wired_html`。
+- 择优启发式逐行移植：物理单元格数（含 `<thead>` 计数同款）、非空单元格规模（`round(√n)` 半值
+  取偶）、OCR 文字覆盖数、空格率 → 决定回落无线还是采用有线。
+- 验证：demo1 五个学术无线表，分类 wireless(<0.9)→触发 UNet 复核→启发式正确保留无线
+  （有线 UNet 仅得 1/11/9 格 vs 无线 22/122/63）；`wired_table` 单测仍逐字一致（真有线表走 UNet）。
 
 ---
 
@@ -98,7 +105,7 @@
 
 ## 待办（按优先级）
 
-1. ⬜ 表格分类路由（SLANet+ vs UNet 由 TableClassifier 选）—— 模型与两条路径都已就绪，只差接线。
+1. ✅ ~~表格分类路由（SLANet+ vs UNet 由 TableClassifier 选）~~ —— 本轮完成（见 §1）。
 2. ⬜ `cross_page_table_merge` + `apply_title_leveling`（finalize_middle_json 两步）。
 3. ⬜ `_layout.pdf` / `_span.pdf`（移植 draw_bbox.py 的 PDF 注记绘制）。
 4. 🟡 pin MLX 版本到 `<=0.31.1`。
