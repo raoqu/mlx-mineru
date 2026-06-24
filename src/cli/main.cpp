@@ -27,6 +27,9 @@
 #include "mineru/vlm_layout.hpp"
 #include "nlohmann/json.hpp"
 #ifdef MINERU_HAVE_PIPELINE
+#include <memory>
+
+#include "mineru/formula_rec.hpp"
 #include "mineru/layout_det.hpp"
 #include "mineru/ocr_det.hpp"
 #include "mineru/ocr_rec.hpp"
@@ -406,6 +409,15 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   mineru::TextDetector det = mineru::TextDetector::load(models + "/OCR/ocr_det.onnx");
   mineru::TextRecognizer rec =
       mineru::TextRecognizer::load(models + "/OCR/ocr_rec.onnx", models + "/OCR/ppocrv6_dict.txt");
+  // Formula recognition is optional (large model); load it if present.
+  namespace fsx = std::filesystem;
+  std::unique_ptr<mineru::FormulaRecognizer> mfr;
+  if (fsx::exists(models + "/MFR/mfr_encoder.onnx")) {
+    mfr = std::make_unique<mineru::FormulaRecognizer>(mineru::FormulaRecognizer::load(
+        models + "/MFR/mfr_encoder.onnx", models + "/MFR/mfr_decoder.onnx",
+        models + "/MFR/mfr_vocab.txt"));
+    std::cerr << "[mlx-mineru] formula recognizer loaded\n";
+  }
   std::cerr << "[mlx-mineru] pipeline models loaded in " << secs(t0, Clock::now()) << "s\n";
 
   auto t_inf = Clock::now();
@@ -413,7 +425,8 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   std::vector<mineru::PipelinePageImage> pages;
   for (int p = s; p <= e; ++p) {
     mineru::PageImage im = doc.render_page(p, dpi);
-    model_list.push_back(mineru::build_page_model(layout, det, im.rgb, im.width, im.height));
+    model_list.push_back(
+        mineru::build_page_model(layout, det, im.rgb, im.width, im.height, mfr.get()));
     mineru::PipelinePageImage pg;
     pg.page_w = (int)std::lround(im.width_pt);
     pg.page_h = (int)std::lround(im.height_pt);

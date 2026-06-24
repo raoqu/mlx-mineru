@@ -26,7 +26,7 @@ const std::map<std::string, std::string>& labels_map() {
       {"header_image", "header"},      {"number", "page_number"},
       {"paragraph_title", "paragraph_title"}, {"reference_content", "ref_text"},
       {"text", "text"},                {"vertical_text", "vertical_text"},
-      {"vision_footnote", "footnote"},
+      {"vision_footnote", "footnote"}, {"display_formula", "interline_equation"},
   };
   return m;
 }
@@ -112,7 +112,7 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
   // __fix_axis + __post_process: scale boxes, drop tiny; split into spans (ocr_text) and
   // region blocks (reindexed 1..N in array order).
   std::vector<Span> spans;
-  struct Region { Box bbox; std::string type; double score; int index; };
+  struct Region { Box bbox; std::string type; double score; int index; std::string latex; };
   std::vector<Region> regions;
   int next_index = 1;
   for (const json& d : dets) {
@@ -125,7 +125,7 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
     }
     auto it = labels_map().find(label);
     if (it == labels_map().end()) continue;
-    regions.push_back({b, it->second, d.value("score", 0.0), next_index++});
+    regions.push_back({b, it->second, d.value("score", 0.0), next_index++, d.value("latex", "")});
   }
 
   // __build_page_blocks: greedily match unused spans into each block (overlap>0.5), then
@@ -133,6 +133,15 @@ json assemble_page_info(const json& model_page, int page_w, int page_h, int page
   std::vector<bool> used(spans.size(), false);
   std::vector<json> blocks;  // preproc blocks (no bbox_fs yet)
   for (const Region& r : regions) {
+    // Interline equation: one latex span, no OCR-text matching (__build_page_blocks visual).
+    if (r.type == "interline_equation") {
+      json span = {{"bbox", box_json(r.bbox)}, {"type", "interline_equation"},
+                   {"content", r.latex}};
+      json line = {{"bbox", box_json(r.bbox)}, {"spans", json::array({span})}};
+      blocks.push_back({{"score", r.score}, {"bbox", box_json(r.bbox)}, {"index", r.index},
+                        {"type", "interline_equation"}, {"lines", json::array({line})}});
+      continue;
+    }
     std::vector<Span> blk_spans;
     for (size_t i = 0; i < spans.size(); ++i) {
       if (used[i]) continue;

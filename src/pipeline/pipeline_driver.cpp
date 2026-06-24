@@ -3,19 +3,42 @@
 #include "mineru/pipeline_driver.hpp"
 
 #include <algorithm>
+#include <array>
 
 #include "mineru/pipeline_assemble.hpp"
 #include "mineru/post_ocr.hpp"
 
 namespace mineru {
 
+// Crop an axis-aligned region [x0,y0,x1,y1] (image pixels) into a fresh RGB buffer.
+static std::vector<uint8_t> crop_rgb(const std::vector<uint8_t>& rgb, int w, int h,
+                                     const std::array<int, 4>& bb, int& cw, int& ch) {
+  int x0 = std::max(0, std::min(w, bb[0])), y0 = std::max(0, std::min(h, bb[1]));
+  int x1 = std::max(0, std::min(w, bb[2])), y1 = std::max(0, std::min(h, bb[3]));
+  cw = std::max(0, x1 - x0);
+  ch = std::max(0, y1 - y0);
+  std::vector<uint8_t> c((size_t)cw * ch * 3);
+  for (int y = 0; y < ch; ++y)
+    for (int x = 0; x < cw; ++x)
+      for (int k = 0; k < 3; ++k)
+        c[((size_t)y * cw + x) * 3 + k] = rgb[((size_t)(y0 + y) * w + (x0 + x)) * 3 + k];
+  return c;
+}
+
 nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector& det,
-                                const std::vector<uint8_t>& rgb, int w, int h) {
+                                const std::vector<uint8_t>& rgb, int w, int h,
+                                const FormulaRecognizer* mfr) {
   nlohmann::json dets = nlohmann::json::array();
   // Region boxes (reading-order index already assigned by the detector).
   for (const LayoutBox& b : layout.detect(rgb, w, h)) {
-    dets.push_back({{"cls_id", b.cls_id}, {"label", b.label}, {"score", b.score},
-                    {"bbox", {b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]}}, {"index", b.index}});
+    nlohmann::json d = {{"cls_id", b.cls_id}, {"label", b.label}, {"score", b.score},
+                        {"bbox", {b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]}}, {"index", b.index}};
+    if (mfr && (b.label == "display_formula" || b.label == "inline_formula")) {
+      int cw, ch;
+      std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
+      d["latex"] = (cw > 0 && ch > 0) ? mfr->recognize(crop, cw, ch).latex : std::string();
+    }
+    dets.push_back(std::move(d));
   }
   // OCR text-line boxes -> ocr_text dets (axis-aligned bbox, empty text).
   for (const DetBox& d : det.detect(rgb, w, h)) {

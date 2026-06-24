@@ -41,11 +41,16 @@ LayoutDetector LayoutDetector::load(const std::string& model_dir, float conf) {
   LayoutDetector d;
   Impl& m = *d.impl_;
   m.conf = conf;
-  nlohmann::json cfg = nlohmann::json::parse(read_file(model_dir + "/config.json"));
-  int n = 0;
-  for (auto& [k, v] : cfg["id2label"].items()) n = std::max(n, std::stoi(k) + 1);
-  m.id2label.assign(n, "");
-  for (auto& [k, v] : cfg["id2label"].items()) m.id2label[std::stoi(k)] = v.get<std::string>();
+  // MinerU overrides config.json id2label with its hardcoded PP_DOCLAYOUT_V2_LABELS
+  // (config.json collapses display_formula/inline_formula/reference into "formula"/etc.).
+  // Use MinerU's authoritative names so downstream label-based routing matches.
+  m.id2label = {"abstract",      "algorithm",   "aside_text",     "chart",
+                "content",       "display_formula", "doc_title",  "figure_title",
+                "footer",        "footer_image", "footnote",      "formula_number",
+                "header",        "header_image", "image",         "inline_formula",
+                "number",        "paragraph_title", "reference",  "reference_content",
+                "seal",          "table",        "text",          "vertical_text",
+                "vision_footnote"};
   m.opts.SetIntraOpNumThreads(0);  // ORT default
   m.session = std::make_unique<Ort::Session>(m.env, (model_dir + "/layout.onnx").c_str(), m.opts);
   return d;

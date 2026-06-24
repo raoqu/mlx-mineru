@@ -80,9 +80,11 @@
 
 1. ~~**接 CLI（`--backend pipeline`）**~~ ✅ 已完成：`mlx-mineru --backend pipeline -p a.pdf`
    直接出 Markdown/content_list/middle（整篇 a.pdf ~7s，无需 VLM 模型）。
-2. **可视块装配（image/table/formula 入 middle_json）** — 识别器（table_rec/formula_rec）
-   已验证，缺的是把版面的 table/formula/image 块在装配阶段切图、调用识别器、写回
-   span（`html`/`latex`/图片路径）。完成后表格与公式才会出现在 Markdown。
+2. **可视块装配（image/table/formula 入 middle_json）** — 🟡 公式已接通：装配产出
+   `interline_equation` 块（latex span），`build_page_model` 切图调 MFR 写回 latex，CLI
+   接 FormulaRecognizer，`$$...$$` 已出现在 Markdown（demo1 验证）。**剩余**：table（嵌套
+   caption/body/footnote 的 `__classify_visual_blocks` + html 写回）、image、inline_formula
+   内联 span、formula_number 的 `\tag{N}` 关联、cut_image 落盘。
 3. **para_split 完整逻辑** — list/index 检测与跨块合并，显著提升列表/多行段落的 Markdown 质量。
 4. **数字 PDF 取字路径（pdftext）** — 对"带文本层"的常见 PDF 做到字节级一致（含 CJK 码位）；
    当前 OCR 路径语义正确但码位为 CJK 统一汉字而非源 PDF 的兼容码位。工作量较大但价值高。

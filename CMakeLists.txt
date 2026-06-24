@@ -122,6 +122,13 @@ add_test(
   COMMAND test_pipeline_assemble ${CMAKE_SOURCE_DIR}/tests/golden
 )
 
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p2_model.json)
+  add_executable(test_pipeline_formula tests/test_pipeline_formula.cpp)
+  target_include_directories(test_pipeline_formula PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  target_link_libraries(test_pipeline_formula PRIVATE mineru_core)
+  add_test(NAME pipeline_formula COMMAND test_pipeline_formula ${CMAKE_SOURCE_DIR}/tests/golden)
+endif()
+
 add_executable(test_mkcontent_golden tests/test_mkcontent_golden.cpp)
 target_include_directories(test_mkcontent_golden PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(test_mkcontent_golden PRIVATE mineru_core)
@@ -364,6 +371,18 @@ if(HAVE_ORT)
       set_target_properties(test_pipeline_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
       add_test(NAME pipeline_scratch COMMAND test_pipeline_scratch ${CMAKE_SOURCE_DIR}/tests/golden
                 ${CMAKE_SOURCE_DIR}/models/pipeline ${CMAKE_SOURCE_DIR}/a.pdf)
+
+      if(EXISTS ${CMAKE_SOURCE_DIR}/tests/demo1.pdf AND
+         EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p2_model.json AND
+         EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_encoder.onnx)
+        add_executable(test_pipeline_formula_scratch tests/test_pipeline_formula_scratch.cpp)
+        target_include_directories(test_pipeline_formula_scratch PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+        target_link_libraries(test_pipeline_formula_scratch PRIVATE mineru_pipeline mineru_core mineru_pdf)
+        set_target_properties(test_pipeline_formula_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
+        add_test(NAME pipeline_formula_scratch COMMAND test_pipeline_formula_scratch
+                  ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/models/pipeline
+                  ${CMAKE_SOURCE_DIR}/tests/demo1.pdf)
+      endif()
     endif()
   endif()
 
