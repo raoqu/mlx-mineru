@@ -132,4 +132,16 @@ largest remaining task; it advances phase by phase with golden verification.
   sort; label→BlockType map) + `model_json_to_middle_json` + `para_split` + title
   leveling → `para_blocks`; then the existing byte-exact `union_make` renders Markdown.
   a.pdf p0 is text/title-only (29 dets → 10 para_blocks, 1:1) — the natural first slice.
-- **Also queued**: UNet wired-table structure; full P5 MagicModel/para_split port.
+- **P5 assembly — text/title slice ✅**: `assemble_page_info` (`src/core/pipeline_assemble.cpp`)
+  ports the MagicModel text path: `__fix_axis` (scale by model_w/page_w, int-truncate, drop
+  ≤2px), `__post_process` (ocr_text → spans, region dets reindexed 1..N), label→BlockType
+  map, greedy span→block match (overlap-in-span-area > 0.5), `merge_spans_to_line` +
+  left-to-right sort, `_post_block_process` (doc_title→title/level1, paragraph_title→
+  title/level2, vertical_text→text), discarded split, and `para_split`'s `bbox_fs`. `ctest
+  pipeline_assemble`: **all 10 blocks structurally exact vs MinerU** (bbox, index, type,
+  level, lines, bbox_fs) — only span text is left blank, since MinerU fills it in a separate
+  post-OCR step (re-running OCR rec on each span crop), which ties to the existing C++ OCR
+  recognizer. Next: wire post-OCR text-fill + image/table/formula spans → first full
+  pipeline-backend page → Markdown via the byte-exact union_make.
+- **Also queued**: UNet wired-table structure; post-OCR text-fill; visual-span path
+  (image/table/formula) in the assembly; para_split cross-block merging for multi-page docs.

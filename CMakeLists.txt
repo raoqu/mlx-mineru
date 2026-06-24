@@ -89,6 +89,7 @@ endif()
 # ---- Core library ------------------------------------------------------------
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
+  src/core/pipeline_assemble.cpp
   src/output/text_utils.cpp
   src/output/mkcontent.cpp
   src/io/image_write.cpp
@@ -111,6 +112,14 @@ add_test(
   NAME middle_json_roundtrip
   COMMAND test_middle_json_roundtrip
           ${CMAKE_SOURCE_DIR}/tests/data/sample_middle.json
+)
+
+add_executable(test_pipeline_assemble tests/test_pipeline_assemble.cpp)
+target_include_directories(test_pipeline_assemble PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+target_link_libraries(test_pipeline_assemble PRIVATE mineru_core)
+add_test(
+  NAME pipeline_assemble
+  COMMAND test_pipeline_assemble ${CMAKE_SOURCE_DIR}/tests/golden
 )
 
 add_executable(test_mkcontent_golden tests/test_mkcontent_golden.cpp)
