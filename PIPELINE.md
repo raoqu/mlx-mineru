@@ -153,6 +153,13 @@ largest remaining task; it advances phase by phase with golden verification.
   (CJK-unified) but not byte-equal. The OCR text-fill is the scanned-doc path and is correct;
   faithful digital-PDF char extraction (pdftext + fill_char_in_spans) is a separate follow-up.
   With text filled, the existing byte-exact union_make renders the page → Markdown.
+- **P5 full vertical ✅ (first pipeline-backend page → Markdown)**: `ctest pipeline_md` runs
+  the whole chain for a.pdf p0 — render (PdfDocument 200dpi) → `assemble_page_info`
+  (model_list → blocks) → `fill_span_text` (post-OCR) → `union_make` → Markdown — and the
+  output (## headings + paragraphs, correct reading order + readable text) is **ASCII-exact
+  vs `union_make` on MinerU's golden middle_json**. The remaining work to a faithful CLI is
+  the per-page driver loop + the non-text paths (digital pdftext extraction, visual spans,
+  UNet tables).
 - **Also queued**: UNet wired-table structure; digital-PDF text extraction (pdftext) for
   text-layer PDFs; visual-span path (image/table/formula) in the assembly; para_split
   cross-block merging for multi-block paragraphs.

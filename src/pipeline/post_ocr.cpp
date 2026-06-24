@@ -45,9 +45,13 @@ void collect(json& blocks, const std::vector<uint8_t>& rgb, int W, int H, double
 
 void fill_span_text(json& page_info, const std::vector<uint8_t>& rgb, int W, int H, double scale,
                     const TextRecognizer& rec, float min_confidence) {
+  // MinerU runs post-OCR on preproc/discarded then para_split copies the filled spans into
+  // para_blocks. Our assembly already materialized para_blocks (independent json copies), so
+  // fill all three to keep them consistent for the downstream union_make.
   std::vector<SpanJob> jobs;
   if (page_info.contains("preproc_blocks")) collect(page_info["preproc_blocks"], rgb, W, H, scale, jobs);
   if (page_info.contains("discarded_blocks")) collect(page_info["discarded_blocks"], rgb, W, H, scale, jobs);
+  if (page_info.contains("para_blocks")) collect(page_info["para_blocks"], rgb, W, H, scale, jobs);
   if (jobs.empty()) return;
 
   // Batched rec (predict_rec semantics): sort by aspect, batches of 6 share the widest
