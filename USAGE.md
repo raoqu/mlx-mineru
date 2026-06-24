@@ -99,7 +99,8 @@ mlx-mineru -p <file.pdf> [options]
 | `-s, --start <n>` | `0` | First page (0-based) |
 | `-e, --end <n>` | last | Last page (0-based, inclusive) |
 | `-o, --output <dir>` | `output` | Output directory |
-| `--layout-only` | off | Only run layout detection, emit JSON |
+| `--layout-only` | off | Only run layout detection → `<stem>_layout.json` (block types + bboxes per page); no content recognition |
+| `--no-image-rec` | off | VLM backend: skip image/chart *understanding* (still crops + saves the image, emits `![](…)`); much faster when pages have figures/charts |
 | `--server` | off | Run the HTTP API server instead of converting |
 | `--host <h>` | `127.0.0.1` | Server bind host |
 | `--port <p>` | `8000` | Server port |

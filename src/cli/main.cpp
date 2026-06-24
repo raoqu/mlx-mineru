@@ -137,7 +137,8 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
                          const mineru::PageImage& pg, int page_idx, bool layout_only,
                          std::vector<mineru::ContentBlock>* layout_out = nullptr,
                          const std::string& images_dir = "", int batch_size = 6,
-                         const std::vector<mineru::ContentBlock>* precomputed = nullptr) {
+                         const std::vector<mineru::ContentBlock>* precomputed = nullptr,
+                         bool skip_image_rec = false) {
   const auto& cfg = model.config();
   std::vector<mineru::ContentBlock> blocks;
   if (precomputed) {
@@ -169,20 +170,25 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
   static const std::vector<std::string> discard_types = {
       bt::kHeader, bt::kFooter, bt::kPageNumber, bt::kPageFootnote, bt::kAsideText};
 
-  // Pass 1: per block, crop + vision tower + build the content prompt.
+  // Pass 1: per block, crop + (for blocks needing content) vision tower + prompt.
+  // With --no-image-rec, image/chart blocks are cropped/saved but skip the VLM
+  // understanding entirely (no vision encode, no generation) -> much faster.
   struct Job { int cw, ch; bool keep_special; std::vector<uint8_t> crop; };
   std::vector<Job> jobs(blocks.size());
   std::vector<std::vector<int>> prompts(blocks.size());
   std::vector<std::vector<float>> pvs(blocks.size());  // per-block pixel_values (CPU)
   std::vector<int> nimgs(blocks.size());
   std::vector<std::array<int, 3>> grids(blocks.size());
+  std::vector<bool> skip(blocks.size(), false);
+  std::vector<int> active;  // block indices that need VLM content
   for (size_t i = 0; i < blocks.size(); ++i) {
     const auto& b = blocks[i];
     std::cerr << "[mlx-mineru]  preprocess " << (i + 1) << "/" << blocks.size() << " (" << b.type << ")   \r";
     bool discard = std::find(discard_types.begin(), discard_types.end(), b.type) != discard_types.end();
     Job& j = jobs[i];
-    j.crop = crop_rgb(pg, b.bbox, j.cw, j.ch);
+    j.crop = crop_rgb(pg, b.bbox, j.cw, j.ch);  // always crop (image/chart still saved)
     j.keep_special = (b.type == "table");
+    if (skip_image_rec && (b.type == "image" || b.type == "chart")) { skip[i] = true; continue; }
     std::vector<uint8_t> crop = resize_by_need(j.crop, j.cw, j.ch);
     mineru::VisionInput cvi = mineru::preprocess_image(crop, j.cw, j.ch);
     nimgs[i] = cvi.seq_len() / (cfg.spatial_merge_size * cfg.spatial_merge_size);
@@ -190,27 +196,30 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
     pvs[i] = std::move(cvi.pixel_values);
     std::string instr = discard ? "\nText Recognition:" : instruction_for(b.type);
     prompts[i] = build_prompt(tok, nimgs[i], cfg.image_token_id, instr);
+    active.push_back((int)i);
   }
-  // Encode ALL crops in one synchronized batch (MLX overlaps them on the GPU).
-  std::cerr << "\n[mlx-mineru]  batched vision over " << blocks.size() << " crops ...\n";
+  // Encode the active crops in one synchronized batch (MLX overlaps them on the GPU).
+  std::cerr << "\n[mlx-mineru]  batched vision over " << active.size() << " crops ...\n";
+  std::vector<std::vector<float>> pvs_a, grids_unused;
+  std::vector<std::array<int, 3>> grids_a;
+  for (int i : active) { pvs_a.push_back(pvs[i]); grids_a.push_back(grids[i]); }
   auto _cv0 = Clock::now();
-  std::vector<std::vector<float>> embeds = model.forward_vision_batch(pvs, grids);
+  auto embeds_a = model.forward_vision_batch(pvs_a, grids_a);
+  std::vector<std::vector<float>> embeds(blocks.size());
+  for (size_t k = 0; k < active.size(); ++k) embeds[active[k]] = std::move(embeds_a[k]);
   g_prof.content_vision += secs(_cv0, Clock::now());
-  // Pass 2: batched generation, length-bucketed. Sort blocks by prompt length
-  // and batch similar-length ones together so left-padding waste stays small
-  // (image-token counts vary a lot across crops).
+  // Pass 2: batched generation over the active blocks, length-bucketed.
   const int kBatch = std::max(1, batch_size);
   std::vector<std::vector<int>> gens(blocks.size());
-  std::vector<int> order(blocks.size());
-  for (size_t i = 0; i < order.size(); ++i) order[i] = (int)i;
+  std::vector<int> order = active;
   std::sort(order.begin(), order.end(),
             [&](int a, int b) { return prompts[a].size() < prompts[b].size(); });
-  std::cerr << "[mlx-mineru]  batched generation over " << blocks.size() << " blocks (groups of "
+  std::cerr << "[mlx-mineru]  batched generation over " << order.size() << " blocks (groups of "
             << kBatch << ") ...\n";
   auto _cg0 = Clock::now();
   for (size_t off = 0; off < order.size(); off += kBatch) {
     size_t end = std::min(order.size(), off + kBatch);
-    std::vector<std::vector<int>> bp, be_ids;
+    std::vector<std::vector<int>> bp;
     std::vector<std::vector<float>> be;
     std::vector<int> bn;
     std::vector<std::array<int, 3>> bg;
@@ -293,7 +302,7 @@ static json process_page(const mineru::Qwen2VLModel& model, const mineru::Qwen2T
 static json convert_batched(const mineru::Qwen2VLModel& model, const mineru::Qwen2Tokenizer& tok,
                             std::vector<mineru::PageImage>& pages,
                             const std::vector<int>& page_idxs, const std::string& images_dir,
-                            int batch_size) {
+                            int batch_size, bool skip_image_rec = false) {
   int P = (int)pages.size();
   std::vector<std::vector<float>> pvs(P);
   std::vector<std::array<int, 3>> grids(P);
@@ -325,7 +334,7 @@ static json convert_batched(const mineru::Qwen2VLModel& model, const mineru::Qwe
   json pdf_info = json::array();
   for (int p = 0; p < P; ++p)
     pdf_info.push_back(process_page(model, tok, pages[p], page_idxs[p], /*layout_only=*/false,
-                                    nullptr, images_dir, batch_size, &blocks[p]));
+                                    nullptr, images_dir, batch_size, &blocks[p], skip_image_rec));
   return pdf_info;
 }
 
@@ -482,7 +491,7 @@ int main(int argc, char** argv) {
   std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
   std::string host = "127.0.0.1", backend = "vlm", pipeline_models = "models/pipeline";
   int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6, pipeline_dpi = 200;
-  bool layout_only = false, server = false;
+  bool layout_only = false, server = false, no_image_rec = false;
   app.add_option("-b,--backend", backend, "Backend: vlm (default) | pipeline (native ONNX CV)");
   app.add_option("--pipeline-models", pipeline_models,
                  "Pipeline backend model dir (default models/pipeline)");
@@ -492,7 +501,8 @@ int main(int argc, char** argv) {
   app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
   app.add_option("-e,--end", end_page, "Last 0-based page inclusive (default: last)");
   app.add_option("-o,--output", out_dir, "Output directory (MinerU layout: <out>/<name>/vlm/)");
-  app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON");
+  app.add_flag("--layout-only", layout_only, "Only run layout detection, emit JSON (block types + bboxes), no content recognition");
+  app.add_flag("--no-image-rec", no_image_rec, "VLM backend: skip image/chart understanding (still saves the cropped image), much faster");
   app.add_flag("--server", server, "Run the HTTP API server instead of a one-shot conversion");
   app.add_option("--host", host, "Server bind host (default 127.0.0.1)");
   app.add_option("--port", port, "Server port (default 8000)");
@@ -571,7 +581,7 @@ int main(int argc, char** argv) {
       g_prof.raster += secs(_r0, Clock::now());
       idxs.push_back(p);
     }
-    pdf_info = convert_batched(model, tok, pages, idxs, images_dir, batch_size);
+    pdf_info = convert_batched(model, tok, pages, idxs, images_dir, batch_size, no_image_rec);
   }
 
   auto write = [&](const std::string& fname, const std::string& data) {
