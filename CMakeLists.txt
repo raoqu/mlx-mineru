@@ -155,6 +155,15 @@ if(HAVE_PDFIUM)
   target_include_directories(mineru_pdf PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pdf PUBLIC pdfium thirdparty_headers)
 
+  if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/pipeline_p0_model.json)
+    add_executable(test_pipeline_digital tests/test_pipeline_digital.cpp)
+    target_include_directories(test_pipeline_digital PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+    target_link_libraries(test_pipeline_digital PRIVATE mineru_pdf mineru_core)
+    set_target_properties(test_pipeline_digital PROPERTIES BUILD_RPATH ${PDFIUM_DIR}/lib)
+    add_test(NAME pipeline_digital COMMAND test_pipeline_digital
+              ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/a.pdf)
+  endif()
+
   add_executable(test_pdf_raster tests/test_pdf_raster.cpp)
   target_include_directories(test_pdf_raster PRIVATE ${CMAKE_SOURCE_DIR}/tests)
   target_link_libraries(test_pdf_raster PRIVATE mineru_pdf)

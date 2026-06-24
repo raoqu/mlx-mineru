@@ -15,7 +15,9 @@ namespace mineru {
 
 // Fill span "content"/"score" in page_info's preproc_blocks + discarded_blocks in place.
 // rgb = page image (w*h*3); scale = image_w / page_point_w (span bboxes are page-point).
+// only_empty: skip spans that already have non-empty content (digital-text fallback).
 void fill_span_text(nlohmann::json& page_info, const std::vector<uint8_t>& rgb, int w, int h,
-                    double scale, const TextRecognizer& rec, float min_confidence = 0.5f);
+                    double scale, const TextRecognizer& rec, float min_confidence = 0.5f,
+                    bool only_empty = false);
 
 }  // namespace mineru

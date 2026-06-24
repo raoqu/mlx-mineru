@@ -13,6 +13,7 @@
 #include "mineru/ocr.hpp"
 #include "mineru/ocr_det.hpp"
 #include "mineru/ocr_rec.hpp"
+#include "mineru/pipeline_assemble.hpp"  // PageChar
 #include "mineru/table_rec.hpp"
 #include "nlohmann/json.hpp"
 
@@ -35,6 +36,7 @@ struct PipelinePageImage {
   std::vector<uint8_t> rgb;  // rendered page, w*h*3 RGB8
   int w = 0, h = 0;          // image pixels
   int page_w = 0, page_h = 0;  // PDF page size in points (middle_json page_size)
+  std::vector<PageChar> chars;  // embedded PDF chars; non-empty -> digital text path
 };
 
 // model_list[i] = {"layout_dets": [...], "page_info": {...}} for page i. Returns the

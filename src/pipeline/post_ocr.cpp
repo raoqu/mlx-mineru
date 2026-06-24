@@ -22,13 +22,14 @@ struct SpanJob {
 };
 
 void collect(json& blocks, const std::vector<uint8_t>& rgb, int W, int H, double scale,
-             std::vector<SpanJob>& jobs) {
+             std::vector<SpanJob>& jobs, bool only_empty) {
   for (auto& b : blocks) {
     if (!b.contains("lines")) continue;
     for (auto& ln : b["lines"]) {
       if (!ln.contains("spans")) continue;
       for (auto& sp : ln["spans"]) {
         if (sp.value("type", "") != "text") continue;
+        if (only_empty && !sp.value("content", "").empty()) continue;
         auto bb = sp["bbox"];
         // span bbox is page-point; scale up to image coords, build a 4-corner quad.
         float x0 = bb[0].get<float>() * scale, y0 = bb[1].get<float>() * scale;
@@ -44,14 +45,14 @@ void collect(json& blocks, const std::vector<uint8_t>& rgb, int W, int H, double
 }  // namespace
 
 void fill_span_text(json& page_info, const std::vector<uint8_t>& rgb, int W, int H, double scale,
-                    const TextRecognizer& rec, float min_confidence) {
+                    const TextRecognizer& rec, float min_confidence, bool only_empty) {
   // MinerU runs post-OCR on preproc/discarded then para_split copies the filled spans into
   // para_blocks. Our assembly already materialized para_blocks (independent json copies), so
   // fill all three to keep them consistent for the downstream union_make.
   std::vector<SpanJob> jobs;
-  if (page_info.contains("preproc_blocks")) collect(page_info["preproc_blocks"], rgb, W, H, scale, jobs);
-  if (page_info.contains("discarded_blocks")) collect(page_info["discarded_blocks"], rgb, W, H, scale, jobs);
-  if (page_info.contains("para_blocks")) collect(page_info["para_blocks"], rgb, W, H, scale, jobs);
+  if (page_info.contains("preproc_blocks")) collect(page_info["preproc_blocks"], rgb, W, H, scale, jobs, only_empty);
+  if (page_info.contains("discarded_blocks")) collect(page_info["discarded_blocks"], rgb, W, H, scale, jobs, only_empty);
+  if (page_info.contains("para_blocks")) collect(page_info["para_blocks"], rgb, W, H, scale, jobs, only_empty);
   if (jobs.empty()) return;
 
   // Batched rec (predict_rec semantics): sort by aspect, batches of 6 share the widest

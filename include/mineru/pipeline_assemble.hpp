@@ -23,4 +23,16 @@ nlohmann::json assemble_page_info(const nlohmann::json& model_page, int page_w, 
 // preproc_blocks/para_blocks array) in place. Run after post-OCR text-fill.
 void optimize_formula_numbers(nlohmann::json& blocks);
 
+// One embedded PDF character (digital-PDF text path); bbox in top-left page points.
+struct PageChar {
+  unsigned int cp = 0;
+  int idx = 0;
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
+// Digital-PDF text fill: assign embedded chars to text spans by bbox (calculate_char_in_span)
+// and build span content (chars_to_content), faithful to MinerU txt_spans_extract. Returns
+// the number of text spans left empty (candidates for OCR fallback). Mutates page_info.
+int fill_chars_in_page(nlohmann::json& page_info, const std::vector<PageChar>& chars);
+
 }  // namespace mineru

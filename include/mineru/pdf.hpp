@@ -23,6 +23,14 @@ struct PageImage {
   std::vector<uint8_t> rgb;  // width*height*3, row-major, top-down
 };
 
+// One PDF text character (digital-PDF text path). bbox is in page points with a
+// top-left origin (y down), matching middle_json span coordinates.
+struct PdfChar {
+  unsigned int cp = 0;  // unicode codepoint
+  int idx = 0;          // original char index on the page (PDF order)
+  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
 // Owns a pdfium document. One global library init is handled internally
 // (ref-counted). Throws std::runtime_error on load/render failure.
 class PdfDocument {
@@ -37,6 +45,10 @@ class PdfDocument {
 
   int page_count() const;
   PageImage render_page(int index, int dpi = kDefaultPdfDpi, int max_edge = kDefaultMaxEdge) const;
+
+  // Extract embedded text characters (unicode + bbox in top-left page points) for the
+  // digital-PDF text path. Empty for scanned/image pages.
+  std::vector<PdfChar> extract_chars(int index) const;
 
  private:
   PdfDocument();

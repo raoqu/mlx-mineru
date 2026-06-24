@@ -78,7 +78,15 @@ nlohmann::json pipeline_assemble_pages(const nlohmann::json& model_list,
     PipelinePageImage& pg = pages[i];
     nlohmann::json page_info = assemble_page_info(model_list[i], pg.page_w, pg.page_h, (int)i);
     double scale = pg.page_w > 0 ? (double)pg.w / pg.page_w : 1.0;
-    fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec);
+    // Digital PDF (embedded text) -> char-fill; scanned page -> OCR. For digital pages, any
+    // span left empty by char-fill (e.g. text inside an image) falls back to OCR.
+    if (!pg.chars.empty()) {
+      fill_chars_in_page(page_info, pg.chars);
+      fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec, /*min_confidence=*/0.5f,
+                     /*only_empty=*/true);
+    } else {
+      fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec);
+    }
     // formula_number -> \tag{N} after the numbers are OCR-filled (both block lists, since
     // our assembly materializes para_blocks independently).
     optimize_formula_numbers(page_info["preproc_blocks"]);

@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "fpdf_formfill.h"
+#include "fpdf_text.h"
 #include "fpdfview.h"
 
 namespace mineru {
@@ -158,6 +159,35 @@ PageImage PdfDocument::render_page(int index, int dpi, int max_edge) const {
   FPDFBitmap_Destroy(bmp);
   FPDF_ClosePage(page);
   return out;
+}
+
+std::vector<PdfChar> PdfDocument::extract_chars(int index) const {
+  std::vector<PdfChar> chars;
+  FPDF_PAGE page = FPDF_LoadPage(impl_->doc, index);
+  if (!page) throw std::runtime_error("extract_chars: load failed: " + pdfium_error());
+  double h_pt = FPDF_GetPageHeightF(page);
+  FPDF_TEXTPAGE tp = FPDFText_LoadPage(page);
+  if (tp) {
+    int n = FPDFText_CountChars(tp);
+    chars.reserve(n);
+    for (int i = 0; i < n; ++i) {
+      // Loose char box (full line height) — matches pdftext, so low-sitting punctuation
+      // aligns vertically with its line span.
+      FS_RECTF r;
+      if (!FPDFText_GetLooseCharBox(tp, i, &r)) continue;
+      PdfChar c;
+      c.cp = FPDFText_GetUnicode(tp, i);
+      c.idx = i;
+      c.x0 = std::min(r.left, r.right);
+      c.x1 = std::max(r.left, r.right);
+      c.y0 = h_pt - std::max(r.top, r.bottom);  // flip to top-left origin (y down)
+      c.y1 = h_pt - std::min(r.top, r.bottom);
+      chars.push_back(c);
+    }
+    FPDFText_ClosePage(tp);
+  }
+  FPDF_ClosePage(page);
+  return chars;
 }
 
 }  // namespace mineru

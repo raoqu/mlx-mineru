@@ -43,7 +43,7 @@
 | 后置 OCR 取字（post-OCR text-fill） | ✅ | ✅ | 全 span 填充，ASCII 精确 |
 | 多页驱动 + union_make → Markdown | ✅ | ✅ | 整篇 a.pdf ASCII 精确 |
 | 从零生成 model_list（无 MinerU 依赖） | ✅ | ✅ | render→layout+OCR det→md 精确 |
-| **数字 PDF 取字（pdftext / fill_char_in_spans）** | ✅ | ❌ | a.pdf 是数字 PDF，MinerU 走嵌入文本层（康熙部首码位）；我们走 OCR（NFKC 等价但码位不同） |
+| **数字 PDF 取字（pdftext / fill_char_in_spans）** | ✅ | ✅ | `PdfDocument::extract_chars`（pdfium loose char box）+ `fill_chars_in_page`（calculate_char_in_span + chars_to_content）；driver/CLI 有嵌入文本则走数字路径、否则 OCR，空 span 回落 OCR。a.pdf p0 与 MinerU **19/19 部首等价**（结构/间距/标点一致；仅康熙部首↔统一汉字码位差，源于 vendored pdfium 与 pypdfium2 版本差异，二者 NFKC 等价） |
 | **可视块装配**（image/table/formula → span/块） | ✅ | ❌ | 识别器已就绪，但未接入 `__build_page_blocks`/`cut_image_and_table` |
 | **有线表格结构（UNet）** | ✅ | ❌ | 仅无线 SLANet+ |
 | **表格方向分类（TableOrientationCls）** | ✅ | ❌ | — |

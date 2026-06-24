@@ -445,9 +445,14 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
     pg.w = im.width;
     pg.h = im.height;
     pg.rgb = std::move(im.rgb);
+    // Digital PDF: use the embedded text layer (faster + exact) instead of OCR.
+    for (const mineru::PdfChar& c : doc.extract_chars(p))
+      pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
+    bool digital = !pg.chars.empty();
     pages.push_back(std::move(pg));
     std::cerr << "[mlx-mineru] page " << p << ": "
-              << model_list.back()["layout_dets"].size() << " dets\n";
+              << model_list.back()["layout_dets"].size() << " dets, "
+              << (digital ? "digital text" : "OCR") << "\n";
   }
   json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, rec);
 

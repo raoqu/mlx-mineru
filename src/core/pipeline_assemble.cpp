@@ -5,8 +5,10 @@
 #include "mineru/pipeline_assemble.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -256,6 +258,116 @@ bool append_tag(json& eq_block, const json& fn_block) {
 bool is_eq(const json& b) { return b.value("type", "") == "interline_equation"; }
 bool is_fn(const json& b) { return b.value("type", "") == "formula_number"; }
 }  // namespace
+
+// ---- digital-PDF text fill (txt_spans_extract / fill_char_in_spans) ----------
+namespace {
+std::string cp_to_utf8(unsigned int cp) {
+  std::string s;
+  if (cp < 0x80) s += (char)cp;
+  else if (cp < 0x800) { s += (char)(0xC0 | cp >> 6); s += (char)(0x80 | (cp & 0x3F)); }
+  else if (cp < 0x10000) {
+    s += (char)(0xE0 | cp >> 12); s += (char)(0x80 | ((cp >> 6) & 0x3F));
+    s += (char)(0x80 | (cp & 0x3F));
+  } else {
+    s += (char)(0xF0 | cp >> 18); s += (char)(0x80 | ((cp >> 12) & 0x3F));
+    s += (char)(0x80 | ((cp >> 6) & 0x3F)); s += (char)(0x80 | (cp & 0x3F));
+  }
+  return s;
+}
+
+// LINE_STOP_FLAG / LINE_START_FLAG as codepoints (the ASCII + common CJK punctuation that
+// get the relaxed edge test in calculate_char_in_span).
+bool is_stop_flag(unsigned int c) {
+  static const std::set<unsigned int> s = {'.', '!', '?', 0x3002, 0xFF01, 0xFF1F, ')', 0xFF09,
+      '"', 0x201D, ':', 0xFF1A, ';', 0xFF1B, ']', 0x3011, '}', '>', 0x300B, 0x3001, ',',
+      0xFF0C, '-', 0x2014, 0x2013};
+  return s.count(c) > 0;
+}
+bool is_start_flag(unsigned int c) {
+  static const std::set<unsigned int> s = {'(', 0xFF08, '"', 0x201C, 0x3010, '{', 0x300A, '<',
+      0x300C, 0x300E, '['};
+  return s.count(c) > 0;
+}
+
+// calculate_char_in_span: center-in-span + vertical-axis alignment, with relaxed edge tests
+// for line stop/start punctuation.
+bool char_in_span(const PageChar& ch, const std::array<double, 4>& sb) {
+  double ccx = (ch.x0 + ch.x1) / 2, ccy = (ch.y0 + ch.y1) / 2;
+  double scy = (sb[1] + sb[3]) / 2, sh = sb[3] - sb[1];
+  const double R = 0.33;
+  if (sb[0] < ccx && ccx < sb[2] && sb[1] < ccy && ccy < sb[3] &&
+      std::abs(ccy - scy) < sh * R)
+    return true;
+  if (is_stop_flag(ch.cp))
+    return (sb[2] - sh) < ch.x0 && ch.x0 < sb[2] && ccx > sb[0] && sb[1] < ccy && ccy < sb[3] &&
+           std::abs(ccy - scy) < sh * R;
+  if (is_start_flag(ch.cp))
+    return sb[0] < ch.x1 && ch.x1 < (sb[0] + sh) && ccx < sb[2] && sb[1] < ccy && ccy < sb[3] &&
+           std::abs(ccy - scy) < sh * R;
+  return false;
+}
+
+// chars_to_content: sort by original index, drop control line-breaks, concat with a space
+// inserted where the inter-char gap exceeds 0.25 * median char width.
+std::string chars_to_content(std::vector<const PageChar*>& cs) {
+  std::sort(cs.begin(), cs.end(), [](const PageChar* a, const PageChar* b) { return a->idx < b->idx; });
+  std::vector<const PageChar*> kept;
+  for (auto* c : cs)
+    if (c->cp != 10 && c->cp != 13) kept.push_back(c);  // drop \n \r
+  if (kept.empty()) return "";
+  std::vector<double> widths;
+  for (auto* c : kept) widths.push_back(c->x1 - c->x0);
+  std::sort(widths.begin(), widths.end());
+  double mw = widths[widths.size() / 2];
+  std::string out;
+  for (size_t i = 0; i < kept.size(); ++i) {
+    out += cp_to_utf8(kept[i]->cp);
+    if (i + 1 < kept.size() && kept[i + 1]->x0 - kept[i]->x1 > mw * 0.25 && kept[i]->cp != ' ' &&
+        kept[i + 1]->cp != ' ')
+      out += ' ';
+  }
+  return out;
+}
+
+// Fill one block list's text spans from the page chars.
+int fill_one(json& blocks, const std::vector<PageChar>& chars) {
+  struct SpanRef { json* sp; std::array<double, 4> bbox; std::vector<const PageChar*> cs; };
+  std::vector<SpanRef> spans;
+  for (auto& b : blocks) {
+    if (!b.contains("lines")) continue;
+    for (auto& ln : b["lines"])
+      for (auto& sp : ln["spans"])
+        if (sp.value("type", "") == "text")
+          spans.push_back({&sp, {sp["bbox"][0], sp["bbox"][1], sp["bbox"][2], sp["bbox"][3]}, {}});
+  }
+  std::sort(spans.begin(), spans.end(),
+            [](const SpanRef& a, const SpanRef& b) { return a.bbox[1] < b.bbox[1]; });
+  // Assign each char to the first span (top-to-bottom) it falls in.
+  for (const PageChar& ch : chars) {
+    double ccx = (ch.x0 + ch.x1) / 2;
+    for (auto& s : spans) {
+      if (!is_stop_flag(ch.cp) && !is_start_flag(ch.cp) && !(s.bbox[0] < ccx && ccx < s.bbox[2]))
+        continue;
+      if (char_in_span(ch, s.bbox)) { s.cs.push_back(&ch); break; }
+    }
+  }
+  int empty = 0;
+  for (auto& s : spans) {
+    std::string content = chars_to_content(s.cs);
+    (*s.sp)["content"] = content;
+    (*s.sp)["score"] = content.empty() ? 0.0 : 1.0;
+    if (content.empty()) ++empty;
+  }
+  return empty;
+}
+}  // namespace
+
+int fill_chars_in_page(json& page_info, const std::vector<PageChar>& chars) {
+  int empty = 0;
+  for (const char* key : {"preproc_blocks", "discarded_blocks", "para_blocks"})
+    if (page_info.contains(key)) empty += fill_one(page_info[key], chars);
+  return empty;
+}
 
 void optimize_formula_numbers(json& blocks) {
   json out = json::array();
