@@ -73,9 +73,17 @@ largest remaining task; it advances phase by phase with golden verification.
   resize-to-H48 + /127.5-1 pad + ocr_rec.onnx + CTC greedy decode (drop blank,
   collapse repeats) + 18710-char dict. `ctest ocr_rec` reads real Chinese from an
   a.pdf line ("3. 了解组织行为学学科体系...") matching the Python golden exactly.
-- **Next OCR (C++)**: det preprocess (resize /32, normalize) + DB post-process
-  (sigmoid -> threshold -> contours -> unclip -> boxes) to get the text-line boxes
-  that feed rec. (DB contours/unclip is the heavy part.)
+- **P3 OCR det post-process ✅**: `db_postprocess` (`src/pipeline/ocr_det.cpp`) —
+  faithful port of MinerU `DBPostProcess` (box_type="quad"): binarize>0.3 -> 8-conn
+  components -> convex hull (Andrew) -> minAreaRect (rotating calipers) ->
+  get_mini_boxes ordering -> box_score_fast (int-vertex scanline fill, skip<0.6) ->
+  unclip (rectangle expand by area*1.5/perimeter, no Clipper needed) -> scale with
+  np.round (half-to-even). `ctest ocr_det` matches MinerU's real `DBPostProcess` on
+  the same prob-map: **19/19 boxes, ≤1px per coordinate** (residual is float32
+  minAreaRect vs OpenCV, sub-pixel). Golden: `scripts/gen_ocr_det_golden.py` saves
+  the prob-map + real cv2/pyclipper boxes, isolating geometry from the resize.
+- **Next OCR (C++)**: det preprocess (DetResizeForTest max-960/32 + normalize) +
+  ocr_det.onnx wrapper, then chain det->crop->rec for end-to-end text on a page.
 - **Also queued**: P2 SLANet+/UNet table *structure* recognition (the table HTML); the
   layout heuristic-filter layer + reading order; then OCR (P3), formula (P4),
   assembly (P5).
