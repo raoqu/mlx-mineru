@@ -90,8 +90,12 @@
    - formula_number `\tag{N}`：✅ `optimize_formula_numbers` 把编号块与相邻行间公式合并
      （编号经 OCR → 去括号 → `\tag{N}`，未匹配降级为 text），driver 在 text-fill 后调用，
      demo1 p2 输出 `\tag{1}`/`\tag{2}`。
-   **剩余**：table 的 caption/footnote 嵌套（`find_best_visual_parent`）、有线表 UNet、
-   image 块、inline_formula 内联 span、cut_image 落盘。
+   - table caption/footnote 嵌套：✅ `classify_visual_blocks`（`find_best_visual_parent`：
+     visual-neighbor + 垂直间隔/重叠判定 + 有效阅读序差 + 边/中心距离）把 figure_title→
+     table_caption、vision_footnote→table_footnote 关联到表格，产出两层
+     `[table_caption, table_body, table_footnote]`（demo1 p5 嵌套与 MinerU 完全一致）；
+     post-OCR/数字取字递归填充嵌套块内文本。
+   **剩余**：有线表 UNet、image 块、inline_formula 内联 span、cut_image 落盘。
 3. **para_split 完整逻辑** — list/index 检测与跨块合并，显著提升列表/多行段落的 Markdown 质量。
 4. **数字 PDF 取字路径（pdftext）** — 对"带文本层"的常见 PDF 做到字节级一致（含 CJK 码位）；
    当前 OCR 路径语义正确但码位为 CJK 统一汉字而非源 PDF 的兼容码位。工作量较大但价值高。
