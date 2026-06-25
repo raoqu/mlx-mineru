@@ -75,20 +75,21 @@ pipeline ONNX, ~3.2 GB), published at
 It is auto-discovered relative to the working dir or the executable, so no `--model`
 flag is needed when it sits next to the binary or at the repo root.
 
-**First run downloads it automatically** to the executable's directory (Hugging Face
-first, ModelScope as fallback) — no manual step required. To pre-fetch (CI / offline),
-or to control the destination:
+**First run downloads it automatically** to the executable's directory via the vendored
+[getmodel](https://github.com/raoqu/getmodel) downloader (`third_party/getmodel/`,
+`DownloadModel`): it hits the HF / ModelScope REST APIs, **auto-selects whichever source is
+reachable**, and downloads each file with byte-range **resume** + **retry** (no git/git-lfs).
+To pre-fetch (CI / offline) or control the destination:
 
 ```bash
-./scripts/fetch_mumodel.sh          # -> ./mumodel  (HF, ModelScope fallback)
+./scripts/fetch_mumodel.sh          # -> ./mumodel  (auto-selects HF / ModelScope)
 ./scripts/fetch_mumodel.sh /path    # -> /path
 ./build.sh --mumodel                # pre-fetch as part of a build
-# or directly, mirroring the published model card:
-git clone https://huggingface.co/raoqu/mlx-mu mumodel
 ```
 
-> Auto-download requires `git` + `git-lfs` (`brew install git-lfs`). Pass an explicit
-> `--model` **and** `--pipeline-models` to opt out of auto-download and use your own dirs.
+> `getmodel` needs a C++17 compiler + system libcurl (both already present for the main build).
+> Set `HUGGINGFACE_TOKEN` / `MODELSCOPE_SDK_TOKEN` for private/rate-limited repos. Pass an
+> explicit `--model` **and** `--pipeline-models` to opt out of auto-download and use your own dirs.
 
 The VLM weights are **`opendatalab/MinerU2.5-Pro-2605-1.2B`** (Qwen2-VL, ~1.2 B params).
 The legacy per-file fetch (into `models/MinerU2.5-tokenizer/`) still works:

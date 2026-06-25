@@ -33,10 +33,11 @@ to any Apple Silicon Mac and it runs, no installed libraries. The static source 
 one-time cost (idempotent on rebuild).
 
 The runtime model bundle (`mumodel/`, ~3.2GB) is **auto-downloaded on first run** to the
-executable's directory from [Hugging Face](https://huggingface.co/raoqu/mlx-mu) (with
-[ModelScope](https://modelscope.cn/models/iwannaido/mlx-mu) fallback) — no flags needed
-(`git` + `git-lfs` required). Pre-fetch with `./build.sh --mumodel` or
-`./scripts/fetch_mumodel.sh`.
+executable's directory via the vendored [getmodel](https://github.com/raoqu/getmodel)
+downloader — it queries the [Hugging Face](https://huggingface.co/raoqu/mlx-mu) /
+[ModelScope](https://modelscope.cn/models/iwannaido/mlx-mu) REST APIs, **auto-selects whichever
+source is reachable**, and downloads each file with **resume + retry** (no git/git-lfs needed).
+Pre-fetch with `./build.sh --mumodel` or `./scripts/fetch_mumodel.sh`.
 
 ## CLI — PDF → Markdown
 

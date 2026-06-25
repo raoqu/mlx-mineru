@@ -19,6 +19,7 @@
 #include <mutex>
 
 #include "CLI11/CLI11.hpp"
+#include "getmodel.h"   // DownloadModel: HF/ModelScope auto-select + resume + retry
 #include "mineru/web_assets.hpp"
 #include "httplib/httplib.h"
 #include "mineru/enums.hpp"
@@ -611,15 +612,14 @@ static std::string find_model_root(const std::string& name) {
   return name;
 }
 
-// Published mumodel runtime bundle: the VLM safetensors + pipeline ONNX the engine
-// actually loads. Distributed as a single repo cloned next to the app, mirroring the
-// index-tts2-metal method (git clone <repo> <dir>). Hugging Face is primary;
-// ModelScope is the mainland fallback.
+// Published mumodel runtime bundle: the VLM safetensors + pipeline ONNX the engine actually
+// loads. Distributed at these two mirrors; getmodel's DownloadModel picks whichever source is
+// reachable and resumes/retries per file (no git / git-lfs needed).
 static constexpr const char* kMumodelHF = "https://huggingface.co/raoqu/mlx-mu";
 static constexpr const char* kMumodelMS = "https://modelscope.cn/models/iwannaido/mlx-mu";
 
-// True if <root> looks like a populated mumodel bundle rather than an empty dir or a
-// tree of unresolved Git-LFS pointer stubs: the ~2.2GB VLM weights are present and large.
+// True if <root> looks like a populated mumodel bundle (not an empty/partial dir): the
+// ~2.2GB VLM weights are present and large.
 static bool mumodel_is_complete(const std::filesystem::path& root) {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -627,28 +627,11 @@ static bool mumodel_is_complete(const std::filesystem::path& root) {
   return fs::exists(w, ec) && fs::file_size(w, ec) > (10ull << 20);
 }
 
-static bool run_cmd(const std::string& cmd) {
-  std::cerr << "[mlx-mineru] $ " << cmd << "\n";
-  return std::system(cmd.c_str()) == 0;
-}
-
-// git clone <url> into <dest>, pulling LFS objects so the large weights actually land
-// (the smudge filter runs automatically when git-lfs is installed; we also pull
-// explicitly as a belt-and-braces step). Returns true only if the bundle is complete.
-static bool clone_bundle(const std::string& url, const std::filesystem::path& dest) {
-  namespace fs = std::filesystem;
-  std::error_code ec;
-  fs::remove_all(dest, ec);  // clear any partial/failed prior attempt
-  fs::create_directories(dest.parent_path(), ec);
-  const std::string q = "\"" + dest.string() + "\"";
-  if (!run_cmd("git clone " + std::string(url) + " " + q)) return false;
-  if (!mumodel_is_complete(dest)) run_cmd("git -C " + q + " lfs pull");
-  return mumodel_is_complete(dest);
-}
-
 // Resolve the mumodel bundle, auto-downloading it next to the executable (the "application
-// location", falling back to the working directory) when it is not already present.
-// Returns the bundle root, or an empty string if the download could not be completed.
+// location", falling back to the working directory) when it is not already present. Uses
+// getmodel's DownloadModel: it queries the HF/ModelScope REST APIs, automatically selects the
+// reachable source, and downloads each file with byte-range resume + retry (idempotent — it
+// skips files already complete). Returns the bundle root, or "" if the download failed.
 static std::string ensure_mumodel() {
   namespace fs = std::filesystem;
   std::error_code ec;
@@ -658,24 +641,22 @@ static std::string ensure_mumodel() {
   fs::path exe = executable_dir();
   fs::path dest = (exe.empty() ? fs::path("mumodel") : exe / "mumodel");
   std::cerr << "[mlx-mineru] model bundle 'mumodel' not found; downloading (~3.2GB, one-time)\n"
-            << "[mlx-mineru]   target: " << dest.string() << "\n"
-            << "[mlx-mineru]   requires git + git-lfs (brew install git-lfs)\n";
-
-  if (clone_bundle(kMumodelHF, dest)) {
-    std::cerr << "[mlx-mineru] model bundle ready (Hugging Face)\n";
-    return dest.lexically_normal().string();
+            << "[mlx-mineru]   target: " << dest.string() << "\n";
+  try {
+    DownloadModel({kMumodelHF, kMumodelMS}, dest, /*force_update=*/false, /*retry_count=*/5,
+                  /*delay_seconds=*/0);
+  } catch (const std::exception& e) {
+    std::cerr << "[mlx-mineru] model download failed: " << e.what() << "\n"
+              << "[mlx-mineru] retry later, or fetch manually:\n"
+              << "    getmodel --target mumodel " << kMumodelHF << " " << kMumodelMS << "\n";
+    return {};
   }
-  std::cerr << "[mlx-mineru] Hugging Face download failed; trying ModelScope ...\n";
-  if (clone_bundle(kMumodelMS, dest)) {
-    std::cerr << "[mlx-mineru] model bundle ready (ModelScope)\n";
-    return dest.lexically_normal().string();
+  if (!mumodel_is_complete(dest)) {
+    std::cerr << "[mlx-mineru] model download incomplete (VLM weights missing)\n";
+    return {};
   }
-
-  std::cerr << "[mlx-mineru] automatic download failed. Fetch the bundle manually:\n"
-            << "    git clone " << kMumodelHF << " mumodel\n"
-            << "  or (ModelScope)\n"
-            << "    git clone " << kMumodelMS << " mumodel\n";
-  return {};
+  std::cerr << "[mlx-mineru] model bundle ready: " << dest.string() << "\n";
+  return dest.lexically_normal().string();
 }
 
 // Read an input file as PDF bytes. Image inputs (png/jpeg/bmp/gif/...) are wrapped into a

@@ -20,6 +20,15 @@ target_include_directories(thirdparty_headers INTERFACE
   ${CMAKE_SOURCE_DIR}/third_party        # nlohmann/json.hpp, CLI11/CLI11.hpp
 )
 
+# ---- getmodel (vendored: HF/ModelScope model downloader) --------------------
+# Reuses github.com/raoqu/getmodel's DownloadModel — REST-API based, with automatic source
+# selection (HF <-> ModelScope), byte-range resume, and retry. Links the system libcurl
+# (/usr/lib/libcurl.4.dylib — a base macOS dylib, like libz), so it adds no external dep.
+add_library(mineru_getmodel STATIC ${CMAKE_SOURCE_DIR}/third_party/getmodel/getmodel.cpp)
+target_include_directories(mineru_getmodel PUBLIC ${CMAKE_SOURCE_DIR}/third_party/getmodel)
+target_link_libraries(mineru_getmodel PUBLIC curl)
+target_compile_options(mineru_getmodel PRIVATE -w)   # vendored upstream; silence its warnings
+
 # ---- pdfium ------------------------------------------------------------------
 # Preferred: a trimmed, macOS-only *static* libpdfium.a built from source
 # (scripts/build_pdfium_static_src.sh) so the binary carries no libpdfium.dylib at runtime.
@@ -348,7 +357,7 @@ if(HAVE_MLX)
     # Embed the built web UI (web/dist) into a generated source (stub if absent).
     execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/embed_web.py)
     add_executable(mlx-mineru src/cli/main.cpp src/cli/web_assets.gen.cpp)
-    target_link_libraries(mlx-mineru PRIVATE mineru_qwen mineru_vlm mineru_pdf mineru_core)
+    target_link_libraries(mlx-mineru PRIVATE mineru_qwen mineru_vlm mineru_pdf mineru_core mineru_getmodel)
     # @loader_path first so a relocated bundle (binary + colocated dylibs) is
     # self-contained; the absolute third_party dirs follow for in-tree dev runs.
     set(MLX_MINERU_RPATH "@loader_path;${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
