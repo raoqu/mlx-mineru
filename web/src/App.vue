@@ -53,11 +53,24 @@ onMounted(async () => {
   window.addEventListener('paste', onPaste)
 })
 onUnmounted(() => window.removeEventListener('paste', onPaste))
+// Backend hints + advanced-option labels/info aligned with MinerU's gradio i18n (zh).
 const backendHint = computed(() => ({
-  'hybrid-engine': '原生流水线 + VLM 图表理解（混合）',
-  'pipeline': '原生 ONNX 流水线（版面/OCR/公式/表格，最快）',
-  'vlm': 'Qwen2-VL 视觉大模型（整页理解，含图像）',
-}[backend.value] || '本地原生解析引擎'))
+  'hybrid-engine': '独家混合引擎解析，超高精度',
+  'pipeline': '传统多模型管道解析，低资源，无幻觉',
+  'vlm': '多模态大模型端到端解析，高精度',
+}[backend.value] || '选择文档解析的后端引擎。'))
+// Formula label/info depend on the backend (行间/行内 differ by engine).
+const formulaLabel = computed(() => backend.value === 'vlm' ? '启用行间公式识别'
+  : backend.value === 'pipeline' ? '启用公式识别' : '启用行内公式识别')
+const formulaInfo = computed(() => backend.value === 'vlm' ? '禁用后，行间公式将显示为图片。'
+  : backend.value === 'pipeline' ? '禁用后，行间公式将显示为图片，行内公式将不会被检测或解析。'
+  : '禁用后，行内公式将不会被检测或解析。')
+// 图片分析: vlm always; hybrid only at high effort (medium forces it off).
+const showImageAnalysis = computed(() => backend.value === 'vlm' || (isHybrid.value && hybridEffort.value === 'high'))
+// 强制 OCR: pipeline or hybrid (not vlm); the hint differs (pipeline needs the right OCR language).
+const showForceOcr = computed(() => isPipeline.value || isHybrid.value)
+const forceOcrInfo = computed(() => isHybrid.value ? '仅在识别效果极差时启用。'
+  : '仅在识别效果极差时启用，需选择正确的 OCR 语言。')
 
 const previewUrl = ref('')
 const previewType = ref('')   // 'pdf' | 'image' | ''
@@ -239,22 +252,37 @@ function copy(text) { navigator.clipboard?.writeText(text) }
 
         <button class="adv" @click="showAdvanced = !showAdvanced">高级选项 {{ showAdvanced ? '▲' : '▼' }}</button>
         <div v-if="showAdvanced" class="adv-body">
-          <label class="opt"><input type="checkbox" v-model="tableEnable" /> 表格识别</label>
-          <label class="opt"><input type="checkbox" v-model="formulaEnable" /> 公式识别</label>
-          <label v-if="isVlmish" class="opt"><input type="checkbox" v-model="imageAnalysis" /> 图像/图表理解</label>
-          <label v-if="isPipeline" class="opt"><input type="checkbox" v-model="isOcr" /> 强制 OCR（忽略 PDF 文本层）</label>
-          <div v-if="isPipeline" class="opt-field">
-            <span class="muted small">OCR 语言</span>
-            <select v-model="lang">
+          <div class="opt-group">
+            <label class="opt"><input type="checkbox" v-model="tableEnable" /> 启用表格识别</label>
+            <div class="opt-info">禁用后，表格将显示为图片。</div>
+          </div>
+          <div class="opt-group">
+            <label class="opt"><input type="checkbox" v-model="formulaEnable" /> {{ formulaLabel }}</label>
+            <div class="opt-info">{{ formulaInfo }}</div>
+          </div>
+          <div v-if="showImageAnalysis" class="opt-group">
+            <label class="opt"><input type="checkbox" v-model="imageAnalysis" /> 启用图片分析</label>
+            <div class="opt-info">禁用后，图片/图表块仍保留版面位置，但跳过 VLM 图片/图表分析。</div>
+          </div>
+          <div v-if="isHybrid" class="opt-group">
+            <div class="opt-label">解析强度</div>
+            <div class="opt-info">Medium 速度更快；High 精度更高，耗时可能更长。</div>
+            <div class="opt-field">
+              <label class="radio"><input type="radio" value="medium" v-model="hybridEffort" /> medium</label>
+              <label class="radio"><input type="radio" value="high" v-model="hybridEffort" /> high</label>
+            </div>
+          </div>
+          <div v-if="isPipeline" class="opt-group">
+            <div class="opt-label">OCR 语言</div>
+            <div class="opt-info">为扫描版 PDF 和图片选择 OCR 语言。</div>
+            <select v-model="lang" class="opt-select">
               <option value="ch">中文 (ch)</option>
               <option value="en">English (en)</option>
             </select>
-            <span class="muted small">其他语言需额外模型</span>
           </div>
-          <div v-if="isHybrid" class="opt-field">
-            <span class="muted small">混合 effort</span>
-            <label class="radio"><input type="radio" value="medium" v-model="hybridEffort" /> medium</label>
-            <label class="radio"><input type="radio" value="high" v-model="hybridEffort" /> high</label>
+          <div v-if="showForceOcr" class="opt-group">
+            <label class="opt"><input type="checkbox" v-model="isOcr" /> 强制启用 OCR</label>
+            <div class="opt-info">{{ forceOcrInfo }}</div>
           </div>
         </div>
 

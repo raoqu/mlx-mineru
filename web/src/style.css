@@ -58,11 +58,14 @@ select { padding: 9px; border: 1px solid var(--line); border-radius: 8px; backgr
 input[type="range"] { accent-color: var(--orange); margin-top: 8px; }
 .badge { background: #eef1f5; border-radius: 6px; padding: 2px 10px; font-variant-numeric: tabular-nums; }
 .adv { width: 100%; margin-top: 16px; padding: 9px; background: #eef1f5; border: 0; border-radius: 8px; cursor: pointer; }
-.adv-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.adv-body { margin-top: 8px; display: flex; flex-direction: column; gap: 13px; }
+.opt-group { display: flex; flex-direction: column; gap: 3px; }
+.opt-label { font-size: 13px; font-weight: 600; }
+.opt-info { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
 .opt { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .opt input[type="checkbox"] { accent-color: var(--orange); }
-.opt-field { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.opt-field select { width: auto; margin-top: 0; padding: 5px 8px; }
+.opt-field { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+.opt-field select, .opt-select { width: auto; margin-top: 2px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 7px; }
 .radio { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
 .radio input { accent-color: var(--orange); }
 .btn-row { display: flex; gap: 12px; margin-top: 16px; }

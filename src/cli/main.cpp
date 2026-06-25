@@ -808,17 +808,22 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
         double scale = pages[p].page_w > 0 ? (double)dims[p].first / pages[p].page_w : 1.0;
         for (auto& blk : pdf_info[p]["para_blocks"]) {
           std::string t = blk.value("type", "");
-          if (t != "image" && t != "chart") continue;
+          bool visual = (t == "image" || t == "chart");
+          // table_enable off -> cut the table region as an image (MinerU: "表格将显示为图片").
+          bool cut_table = (t == "table" && !o.table_enable);
+          if (!visual && !cut_table) continue;
           for (auto& sub : blk["blocks"])
             for (auto& ln : sub["lines"])
               for (auto& sp : ln["spans"]) {
-                if (!sp.contains("image_path")) continue;
+                std::string st = sp.value("type", "");
+                if (visual ? (st != "image" && st != "chart") : (st != "table")) continue;
+                if (!sp.contains("bbox")) continue;
                 int cw, ch;
                 auto crop = crop_region(pages[p].rgb, dims[p].first, dims[p].second, sp["bbox"],
                                         scale, cw, ch);
                 if (cw <= 0 || ch <= 0) continue;
                 sp["image_path"] = jpg_data_uri(crop, cw, ch);
-                if (understand)
+                if (understand && visual)
                   sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
               }
         }
