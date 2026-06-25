@@ -622,13 +622,44 @@ static std::string vlm_understand(const mineru::Qwen2VLModel& model,
   return a == std::string::npos ? "" : c.substr(a, z - a + 1);
 }
 
-// RGB crop -> self-contained base64 JPEG data URI (MinerU inlines images the same way:
-// cv2.imencode(".jpg") + base64). Lets the web UI render images with no file serving.
+// RGB crop -> self-contained base64 JPEG data URI. Used as an intermediate carrier; the web
+// path then externalizes these into images/{hash}.jpg file refs (see externalize_images),
+// matching MinerU's file-based image storage.
 static std::string jpg_data_uri(const std::vector<uint8_t>& rgb, int w, int h) {
   std::vector<uint8_t> jpg = mineru::encode_jpeg(rgb, w, h, 85);
   if (jpg.empty()) return "";
   return "data:image/jpeg;base64," +
          httplib::detail::base64_encode(std::string(jpg.begin(), jpg.end()));
+}
+
+// Rewrite inline data-URI image_path values into MinerU-style file refs ({hash}.jpg) and
+// collect a {filename: base64-jpeg} map for the response. union_make(bucket="images") then
+// renders ![](images/{hash}.jpg); the frontend resolves the map for preview + the zip download.
+// Faithful to MinerU's cut_image_and_table writing images/ + content-hash filenames.
+static json externalize_images(json& pdf_info) {
+  json images = json::object();
+  const std::string pfx = "data:image/jpeg;base64,";
+  std::function<void(json&)> visit = [&](json& blk) {
+    if (blk.contains("lines"))
+      for (auto& ln : blk["lines"])
+        if (ln.contains("spans"))
+          for (auto& sp : ln["spans"]) {
+            if (!sp.contains("image_path") || !sp["image_path"].is_string()) continue;
+            std::string ip = sp["image_path"].get<std::string>();
+            if (ip.rfind(pfx, 0) != 0) continue;
+            std::string b64 = ip.substr(pfx.size());
+            std::string fname =
+                mineru::content_hash_hex(std::vector<uint8_t>(b64.begin(), b64.end())) + ".jpg";
+            images[fname] = b64;
+            sp["image_path"] = fname;
+          }
+    if (blk.contains("blocks"))
+      for (auto& sub : blk["blocks"]) visit(sub);
+  };
+  for (auto& page : pdf_info)
+    if (page.contains("para_blocks"))
+      for (auto& blk : page["para_blocks"]) visit(blk);
+  return images;
 }
 
 // Crop an axis-aligned region (page-point bbox * scale) from an RGB page image.
@@ -665,16 +696,18 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
     vmodel = std::make_unique<mineru::Qwen2VLModel>(
         mineru::Qwen2VLModel::load(model_dir + "/model.safetensors", cfg));
   };
-  // Empty bucket: image_path values are full base64 data URIs, used verbatim by union_make.
-  // formula_enable/table_enable gate how formulas/tables render (latex/html vs image), like
-  // MinerU's MINERU_*_ENABLE env vars consumed by union_make.
-  auto to_out = [](const json& pdf_info, const ConvertOpts& o) {
+  // Externalize inline images to images/{hash}.jpg refs (MinerU-style file storage) and render
+  // with the "images" bucket. The {filename: base64} map rides along in the response for the
+  // frontend to render the preview and bundle the download zip. formula_enable/table_enable gate
+  // formula/table rendering (latex/html vs image), like MinerU's MINERU_*_ENABLE env vars.
+  auto to_out = [](json& pdf_info, const ConvertOpts& o) {
     using mineru::make_mode::kContentList;
     using mineru::make_mode::kMmMd;
-    std::string md = mineru::union_make(pdf_info, kMmMd, "", o.formula_enable, o.table_enable)
+    json images = externalize_images(pdf_info);
+    std::string md = mineru::union_make(pdf_info, kMmMd, "images", o.formula_enable, o.table_enable)
                          .get<std::string>();
-    json cl = mineru::union_make(pdf_info, kContentList, "", o.formula_enable, o.table_enable);
-    return json{{"md_content", md}, {"content_list", cl}};
+    json cl = mineru::union_make(pdf_info, kContentList, "images", o.formula_enable, o.table_enable);
+    return json{{"md_content", md}, {"content_list", cl}, {"images", images}};
   };
   // Layout-highlighted preview PDF (base64), like MinerU's gradio _layout.pdf preview.
   auto layout_pdf_b64 = [](const json& pdf_info, const std::vector<uint8_t>& pdf_bytes) -> std::string {

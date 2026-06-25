@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import katex from 'katex'
+import JSZip from 'jszip'
 
 const file = ref(null)
 const fileName = ref('')
@@ -27,6 +28,10 @@ const error = ref('')
 const tab = ref('render')        // render | text | json
 const md = ref('')
 const contentList = ref(null)
+const images = ref({})           // { 'images/{hash}.jpg' filename: base64 } from the server
+const zipUrl = ref('')           // object URL of the bundled {name}.zip (md + images/ + json)
+const zipName = ref('')
+const zipSizeKB = ref(0)
 const serverInfo = ref('')
 
 const steps = ['准备请求', '检查服务', '提交任务', '排队', '解析中', '下载结果', '整理输出', '完成']
@@ -94,8 +99,10 @@ function onPaste(e) {
 }
 function clearAll() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+  if (zipUrl.value) URL.revokeObjectURL(zipUrl.value)
   file.value = null; fileName.value = ''; previewUrl.value = ''; previewType.value = ''
-  md.value = ''; contentList.value = null; error.value = ''; resetSteps()
+  md.value = ''; contentList.value = null; images.value = {}; zipUrl.value = ''; zipName.value = ''
+  error.value = ''; resetSteps()
 }
 
 async function convert() {
@@ -127,6 +134,8 @@ async function convert() {
     setStep(5, 'done'); setStep(6, 'active')
     md.value = j.md_content || ''
     contentList.value = j.content_list || null
+    images.value = j.images || {}
+    await buildZip()
     // Swap the preview to the layout-highlighted PDF (boxes + reading-order numbers),
     // matching the source project's gradio preview.
     if (j.layout_pdf) {
@@ -153,10 +162,35 @@ function renderMath(text) {
   })
   return text
 }
+// For the rendered preview, resolve images/{hash}.jpg refs to inline data URLs from the map
+// (the raw "Markdown 文本" tab keeps the file paths, matching MinerU's output).
+function resolveImages(text) {
+  const imgs = images.value
+  if (!imgs || !Object.keys(imgs).length) return text
+  return text.replace(/images\/([A-Za-z0-9_.-]+)/g, (full, name) =>
+    imgs[name] ? `data:image/jpeg;base64,${imgs[name]}` : full)
+}
 const renderedMd = computed(() => {
   if (!md.value) return ''
-  try { return renderMath(marked.parse(md.value, { breaks: true, gfm: true })) } catch { return '' }
+  try { return renderMath(marked.parse(resolveImages(md.value), { breaks: true, gfm: true })) } catch { return '' }
 })
+
+// Bundle a MinerU-style result zip: {name}.md (with images/ refs) + images/*.jpg + content list.
+async function buildZip() {
+  if (zipUrl.value) { URL.revokeObjectURL(zipUrl.value); zipUrl.value = '' }
+  zipName.value = ''
+  if (!md.value) return
+  const stem = (fileName.value || 'output').replace(/\.[^.]+$/, '')
+  const zip = new JSZip()
+  zip.file(`${stem}.md`, md.value)
+  if (contentList.value) zip.file(`${stem}_content_list.json`, JSON.stringify(contentList.value, null, 2))
+  const folder = zip.folder('images')
+  for (const [name, b64] of Object.entries(images.value)) folder.file(name, b64, { base64: true })
+  const blob = await zip.generateAsync({ type: 'blob' })
+  zipUrl.value = URL.createObjectURL(blob)
+  zipName.value = `${stem}.zip`
+  zipSizeKB.value = Math.round(blob.size / 1024)
+}
 const jsonText = computed(() => contentList.value ? JSON.stringify(contentList.value, null, 2) : '')
 
 function copy(text) { navigator.clipboard?.writeText(text) }
@@ -233,6 +267,12 @@ function copy(text) { navigator.clipboard?.writeText(text) }
 
         <div class="label section">转换结果</div>
         <div v-if="error" class="err">{{ error }}</div>
+        <a v-if="zipName" class="zip-dl" :href="zipUrl" :download="zipName">
+          <span class="zip-ico">🗎</span>
+          <span class="zip-name">{{ zipName }}</span>
+          <span class="muted small">{{ zipSizeKB >= 1024 ? (zipSizeKB/1024).toFixed(1) + ' MB' : zipSizeKB + ' KB' }}</span>
+          <span class="zip-arrow">↓</span>
+        </a>
 
         <div class="card tasks">
           <div class="label"><b>等待任务</b></div>

@@ -70,6 +70,10 @@ input[type="range"] { accent-color: var(--orange); margin-top: 8px; }
 .primary:disabled { opacity: .5; cursor: not-allowed; }
 .ghost { flex: 1; background: #eef1f5; border: 0; border-radius: 8px; padding: 11px; cursor: pointer; }
 .err { color: #c0392b; background: #fdecea; border: 1px solid #f5c6cb; border-radius: 8px; padding: 8px 10px; margin-top: 8px; font-size: 12px; white-space: pre-wrap; }
+.zip-dl { display: flex; align-items: center; gap: 8px; margin-top: 8px; padding: 9px 11px; background: #eef4fe; border: 1px solid #cfe0fb; border-radius: 8px; text-decoration: none; color: #1c2530; font-size: 13px; }
+.zip-dl:hover { background: #e3eefe; }
+.zip-name { font-weight: 600; color: var(--blue1); }
+.zip-arrow { margin-left: auto; color: var(--blue1); font-weight: 700; }
 
 /* tasks */
 .tasks { margin-top: 14px; padding: 14px; }
