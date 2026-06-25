@@ -49,6 +49,9 @@ std::string pdfium_error() {
 
 }  // namespace
 
+void pdfium_acquire() { library_acquire(); }
+void pdfium_release() { library_release(); }
+
 struct PdfDocument::Impl {
   FPDF_DOCUMENT doc = nullptr;
   FPDF_FORMHANDLE form = nullptr;

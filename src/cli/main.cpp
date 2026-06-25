@@ -551,21 +551,6 @@ static std::vector<uint8_t> read_input_as_pdf_bytes(const std::string& path) {
   return bytes;
 }
 
-// Re-render each parsed page (for layout/span overlay PDFs), one RenderedPage per pdf_info page.
-static std::vector<mineru::RenderedPage> render_pages_for_overlay(mineru::PdfDocument& doc,
-                                                                  const json& pdf_info, int dpi) {
-  std::vector<mineru::RenderedPage> rps;
-  for (size_t i = 0; i < pdf_info.size(); ++i) {
-    int pidx = pdf_info[i].value("page_idx", (int)i);
-    mineru::PageImage im = doc.render_page(pidx, dpi);
-    mineru::RenderedPage rp;
-    rp.w = im.width; rp.h = im.height; rp.page_w_pt = im.width_pt; rp.page_h_pt = im.height_pt;
-    rp.rgb = std::move(im.rgb);
-    rps.push_back(std::move(rp));
-  }
-  return rps;
-}
-
 // Native pipeline backend (one-shot): render -> layout + OCR det -> model_list ->
 // assemble + text-fill -> union_make -> write files. No VLM model needed.
 static int run_pipeline(const std::string& pdf_path, const std::string& models,
@@ -607,10 +592,9 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   // _origin.pdf is the (possibly image-wrapped) PDF actually parsed, matching MinerU.
   std::ofstream(dir / (stem + "_origin.pdf"), std::ios::binary)
       .write(reinterpret_cast<const char*>(pdf_bytes.data()), pdf_bytes.size());
-  {  // _layout.pdf + _span.pdf (draw_bbox visualizations), as in MinerU do_parse.
-    auto rps = render_pages_for_overlay(doc, pdf_info, dpi);
-    std::vector<uint8_t> lp = mineru::draw_layout_pdf(pdf_info, rps);
-    std::vector<uint8_t> sp = mineru::draw_span_pdf(pdf_info, rps);
+  {  // _layout.pdf + _span.pdf (draw_bbox vector overlay), as in MinerU do_parse.
+    std::vector<uint8_t> lp = mineru::draw_layout_pdf(pdf_info, pdf_bytes);
+    std::vector<uint8_t> sp = mineru::draw_span_pdf(pdf_info, pdf_bytes);
     std::ofstream(dir / (stem + "_layout.pdf"), std::ios::binary)
         .write(reinterpret_cast<const char*>(lp.data()), lp.size());
     std::ofstream(dir / (stem + "_span.pdf"), std::ios::binary)
@@ -693,8 +677,8 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
     return json{{"md_content", md}, {"content_list", cl}};
   };
   // Layout-highlighted preview PDF (base64), like MinerU's gradio _layout.pdf preview.
-  auto layout_pdf_b64 = [&](mineru::PdfDocument& doc, const json& pdf_info) -> std::string {
-    std::vector<uint8_t> lp = mineru::draw_layout_pdf(pdf_info, render_pages_for_overlay(doc, pdf_info, 144));
+  auto layout_pdf_b64 = [](const json& pdf_info, const std::vector<uint8_t>& pdf_bytes) -> std::string {
+    std::vector<uint8_t> lp = mineru::draw_layout_pdf(pdf_info, pdf_bytes);
     return httplib::detail::base64_encode(std::string(lp.begin(), lp.end()));
   };
 
@@ -770,7 +754,7 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
         }
       }
       json out = to_out(pdf_info, o);
-      out["layout_pdf"] = layout_pdf_b64(doc, pdf_info);
+      out["layout_pdf"] = layout_pdf_b64(pdf_info, pdf_bytes);
       return out;
     }
 #endif
@@ -778,7 +762,7 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
     // image_analysis off -> skip image/chart understanding (still inline the crop).
     json pdf_info = convert_document(*vmodel, *vtok, doc, 0, e, "@inline", !o.image_analysis);
     json out = to_out(pdf_info, o);
-    out["layout_pdf"] = layout_pdf_b64(doc, pdf_info);
+    out["layout_pdf"] = layout_pdf_b64(pdf_info, pdf_bytes);
     return out;
   };
 
@@ -909,10 +893,9 @@ int main(int argc, char** argv) {
     write(stem + "_middle.json", middle.dump(4));
     std::ofstream(dir / (stem + "_origin.pdf"), std::ios::binary)
         .write(reinterpret_cast<const char*>(pdf_bytes.data()), pdf_bytes.size());
-    {  // _layout.pdf + _span.pdf (draw_bbox visualizations).
-      auto rps = render_pages_for_overlay(doc, pdf_info, mineru::kDefaultPdfDpi);
-      std::vector<uint8_t> lp = mineru::draw_layout_pdf(pdf_info, rps);
-      std::vector<uint8_t> sp = mineru::draw_span_pdf(pdf_info, rps);
+    {  // _layout.pdf + _span.pdf (draw_bbox vector overlay).
+      std::vector<uint8_t> lp = mineru::draw_layout_pdf(pdf_info, pdf_bytes);
+      std::vector<uint8_t> sp = mineru::draw_span_pdf(pdf_info, pdf_bytes);
       std::ofstream(dir / (stem + "_layout.pdf"), std::ios::binary)
           .write(reinterpret_cast<const char*>(lp.data()), lp.size());
       std::ofstream(dir / (stem + "_span.pdf"), std::ios::binary)

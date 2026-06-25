@@ -1,15 +1,17 @@
 // Copyright (c) mlx-mineru.
-// Raster-overlay layout/span PDFs (see header). Geometry & colors faithful to MinerU
-// draw_bbox.py; rendering is a raster blend (alpha 0.3 fills, 1px strokes) rather than a
-// vector overlay, which is what the preview needs and keeps us off pdfium's edit APIs.
+// Vector-overlay layout/span PDFs (see header). Faithful to MinerU draw_bbox.py: same block
+// collection, colors, draw order, 0.3 fill alpha, 1pt strokes, and reading-order numbers
+// (Helvetica 10, top-right). Implemented with pdfium edit APIs (rect/text page objects +
+// SaveAsCopy) instead of reportlab+pypdf, preserving the original page content.
 #include "mineru/draw_bbox.hpp"
 
-#include <algorithm>
-#include <array>
-#include <cmath>
 #include <string>
+#include <vector>
 
-#include "mineru/image_write.hpp"
+#include "fpdf_edit.h"
+#include "fpdf_save.h"
+#include "fpdfview.h"
+#include "mineru/pdf.hpp"
 
 namespace mineru {
 namespace {
@@ -18,120 +20,12 @@ using json = nlohmann::json;
 
 struct RGB { int r, g, b; };
 
-// 5x7 bitmap font, digits 0-9 (msb = leftmost of 5 columns).
-constexpr uint8_t kFont[10][7] = {
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E},  // 0
-    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E},  // 1
-    {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F},  // 2
-    {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E},  // 3
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02},  // 4
-    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E},  // 5
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E},  // 6
-    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08},  // 7
-    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E},  // 8
-    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C},  // 9
-};
-
-struct Canvas {
-  std::vector<uint8_t> px;  // mutable copy of rgb
-  int w, h;
-  void blend(int x, int y, RGB c, double a) {
-    if (x < 0 || y < 0 || x >= w || y >= h) return;
-    uint8_t* p = &px[((size_t)y * w + x) * 3];
-    p[0] = (uint8_t)std::lround(c.r * a + p[0] * (1 - a));
-    p[1] = (uint8_t)std::lround(c.g * a + p[1] * (1 - a));
-    p[2] = (uint8_t)std::lround(c.b * a + p[2] * (1 - a));
-  }
-  void fill_rect(int x0, int y0, int x1, int y1, RGB c, double a) {
-    x0 = std::max(0, x0); y0 = std::max(0, y0);
-    x1 = std::min(w, x1); y1 = std::min(h, y1);
-    for (int y = y0; y < y1; ++y)
-      for (int x = x0; x < x1; ++x) blend(x, y, c, a);
-  }
-  void stroke_rect(int x0, int y0, int x1, int y1, RGB c, int t) {
-    for (int k = 0; k < t; ++k) {
-      for (int x = x0; x <= x1; ++x) { blend(x, y0 + k, c, 1.0); blend(x, y1 - k, c, 1.0); }
-      for (int y = y0; y <= y1; ++y) { blend(x0 + k, y, c, 1.0); blend(x1 - k, y, c, 1.0); }
-    }
-  }
-  void glyph(int gx, int gy, int digit, int s, RGB c) {
-    for (int row = 0; row < 7; ++row)
-      for (int col = 0; col < 5; ++col)
-        if (kFont[digit][row] & (1 << (4 - col)))
-          fill_rect(gx + col * s, gy + row * s, gx + col * s + s, gy + row * s + s, c, 1.0);
-  }
-  void number(int x, int y, int n, int s, RGB c) {
-    std::string str = std::to_string(n);
-    for (char ch : str) {
-      glyph(x, y, ch - '0', s, c);
-      x += 6 * s;  // 5 cols + 1 gap
-    }
-  }
-};
-
-// Build a single PDF embedding one JPEG-image page per canvas at its point size.
-std::vector<uint8_t> pages_to_pdf(const std::vector<std::vector<uint8_t>>& jpegs,
-                                  const std::vector<std::array<double, 2>>& sizes_pt,
-                                  const std::vector<std::array<int, 2>>& px) {
-  auto num = [](double v) {
-    char b[48];
-    std::snprintf(b, sizeof(b), "%.4f", v);
-    return std::string(b);
-  };
-  std::string head = "%PDF-1.7\n%\xE2\xE3\xCF\xD3\n";
-  std::vector<uint8_t> out(head.begin(), head.end());
-  auto app = [&](const std::string& s) { out.insert(out.end(), s.begin(), s.end()); };
-  int n = (int)jpegs.size();
-  std::vector<size_t> off;
-  int obj = 1;
-  auto begin = [&](int id) { off.resize(std::max((int)off.size(), id + 1)); off[id] = out.size();
-                             app(std::to_string(id) + " 0 obj\n"); };
-  // 1 catalog, 2 pages, then per page: page obj, image obj, content obj.
-  begin(1); app("<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
-  std::string kids;
-  for (int i = 0; i < n; ++i) kids += std::to_string(3 + i * 3) + " 0 R ";
-  begin(2);
-  app("<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(n) + " >>\nendobj\n");
-  obj = 3;
-  for (int i = 0; i < n; ++i) {
-    int page_id = obj, img_id = obj + 1, cont_id = obj + 2;
-    obj += 3;
-    double W = sizes_pt[i][0], H = sizes_pt[i][1];
-    begin(page_id);
-    app("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + num(W) + " " + num(H) +
-        "] /Resources << /XObject << /Im0 " + std::to_string(img_id) +
-        " 0 R >> >> /Contents " + std::to_string(cont_id) + " 0 R >>\nendobj\n");
-    begin(img_id);
-    app("<< /Type /XObject /Subtype /Image /Width " + std::to_string(px[i][0]) + " /Height " +
-        std::to_string(px[i][1]) +
-        " /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length " +
-        std::to_string(jpegs[i].size()) + " >>\nstream\n");
-    out.insert(out.end(), jpegs[i].begin(), jpegs[i].end());
-    app("\nendstream\nendobj\n");
-    begin(cont_id);
-    std::string c = "q " + num(W) + " 0 0 " + num(H) + " 0 0 cm /Im0 Do Q\n";
-    app("<< /Length " + std::to_string(c.size()) + " >>\nstream\n" + c + "endstream\nendobj\n");
-  }
-  size_t xref = out.size();
-  int total = obj;  // ids 1..total-1
-  app("xref\n0 " + std::to_string(total) + "\n0000000000 65535 f \n");
-  for (int i = 1; i < total; ++i) {
-    char e[32];
-    std::snprintf(e, sizeof(e), "%010zu 00000 n \n", off[i]);
-    app(e);
-  }
-  app("trailer\n<< /Size " + std::to_string(total) + " /Root 1 0 R >>\nstartxref\n" +
-      std::to_string(xref) + "\n%%EOF\n");
-  return out;
-}
-
 const json& source_blocks(const json& page) {
   static const json empty = json::array();
   if (page.contains("preproc_blocks") && !page["preproc_blocks"].empty()) return page["preproc_blocks"];
   if (page.contains("para_blocks")) return page["para_blocks"];
   return empty;
 }
-
 bool is_text_like(const std::string& t) {
   return t == "text" || t == "ref_text" || t == "abstract" || t == "phonetic";
 }
@@ -139,147 +33,186 @@ bool is_direct_layout(const std::string& t) {
   return is_text_like(t) || t == "title" || t == "interline_equation" || t == "list" || t == "index";
 }
 
-std::array<int, 4> scaled(const json& bbox, double sx, double sy) {
-  return {(int)std::lround(bbox[0].get<double>() * sx), (int)std::lround(bbox[1].get<double>() * sy),
-          (int)std::lround(bbox[2].get<double>() * sx), (int)std::lround(bbox[3].get<double>() * sy)};
+// Collect bytes from FPDF_SaveAsCopy.
+struct ByteWriter {
+  FPDF_FILEWRITE fw;
+  std::vector<uint8_t>* out;
+};
+int write_block(FPDF_FILEWRITE* pThis, const void* data, unsigned long size) {
+  auto* w = reinterpret_cast<ByteWriter*>(pThis);
+  const uint8_t* p = static_cast<const uint8_t*>(data);
+  w->out->insert(w->out->end(), p, p + size);
+  return 1;
+}
+std::vector<uint8_t> save_doc(FPDF_DOCUMENT doc) {
+  std::vector<uint8_t> out;
+  ByteWriter w{};
+  w.fw.version = 1;
+  w.fw.WriteBlock = write_block;
+  w.out = &out;
+  FPDF_SaveAsCopy(doc, &w.fw, FPDF_NO_INCREMENTAL);
+  return out;
+}
+
+// MinerU bbox is top-left point space; pdfium user space is bottom-left. For rotation 0 (all
+// our inputs) the rect is [x0, page_h - y1, w, h]; numbers anchor at (x1+2, page_h - y0 - 10).
+void add_rect(FPDF_PAGE page, const json& bbox, double page_h, RGB c, bool fill) {
+  double x0 = bbox[0], y0 = bbox[1], x1 = bbox[2], y1 = bbox[3];
+  FPDF_PAGEOBJECT r = FPDFPageObj_CreateNewRect((float)x0, (float)(page_h - y1), (float)(x1 - x0),
+                                                (float)(y1 - y0));
+  if (fill) {
+    FPDFPageObj_SetFillColor(r, c.r, c.g, c.b, 77);  // 0.3 * 255
+    FPDFPath_SetDrawMode(r, FPDF_FILLMODE_WINDING, 0);
+  } else {
+    FPDFPageObj_SetStrokeColor(r, c.r, c.g, c.b, 255);
+    FPDFPageObj_SetStrokeWidth(r, 1.0f);
+    FPDFPath_SetDrawMode(r, 0, 1);
+  }
+  FPDFPage_InsertObject(page, r);
+}
+
+void add_number(FPDF_DOCUMENT doc, FPDF_PAGE page, const json& bbox, double page_h, int n) {
+  double x1 = bbox[2], y0 = bbox[1];
+  FPDF_PAGEOBJECT t = FPDFPageObj_NewTextObj(doc, "Helvetica", 10.0f);
+  std::string s = std::to_string(n);
+  std::vector<unsigned short> u16(s.begin(), s.end());
+  u16.push_back(0);
+  FPDFText_SetText(t, u16.data());
+  FPDFPageObj_SetFillColor(t, 255, 0, 0, 255);
+  FS_MATRIX m{1, 0, 0, 1, (float)(x1 + 2), (float)(page_h - y0 - 10)};
+  FPDFPageObj_SetMatrix(t, &m);
+  FPDFPage_InsertObject(page, t);
 }
 
 }  // namespace
 
-std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<RenderedPage>& pages,
-                                     int jpeg_quality) {
-  std::vector<std::vector<uint8_t>> jpegs;
-  std::vector<std::array<double, 2>> sizes;
-  std::vector<std::array<int, 2>> px;
-  size_t n = std::min(pdf_info.size(), pages.size());
-  for (size_t i = 0; i < n; ++i) {
-    const json& page = pdf_info[i];
-    const RenderedPage& rp = pages[i];
-    double pw = page.contains("page_size") ? page["page_size"][0].get<double>() : rp.page_w_pt;
-    double ph = page.contains("page_size") ? page["page_size"][1].get<double>() : rp.page_h_pt;
-    double sx = pw > 0 ? rp.w / pw : 1.0, sy = ph > 0 ? rp.h / ph : 1.0;
-    Canvas cv{rp.rgb, rp.w, rp.h};
+std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<uint8_t>& pdf_bytes) {
+  pdfium_acquire();
+  FPDF_DOCUMENT doc = FPDF_LoadMemDocument(pdf_bytes.data(), (int)pdf_bytes.size(), nullptr);
+  if (!doc) { pdfium_release(); return {}; }
 
-    // Category fills (alpha 0.3) in MinerU's draw order; list_items are stroked.
-    struct Cat { std::vector<std::array<int, 4>> rects; RGB c; bool fill; };
-    std::vector<Cat> cats;
-    cats.reserve(16);  // keep references from add() stable (no reallocation)
-    auto add = [&](RGB c, bool fill) -> std::vector<std::array<int, 4>>& {
-      cats.push_back({{}, c, fill});
-      return cats.back().rects;
-    };
-    auto& tables_body = add({204, 204, 0}, true);
-    auto& tables_cap = add({255, 255, 102}, true);
-    auto& tables_foot = add({229, 255, 204}, true);
-    auto& imgs_body = add({153, 255, 51}, true);
-    auto& imgs_cap = add({102, 178, 255}, true);
-    auto& imgs_foot = add({255, 178, 102}, true);
-    auto& titles = add({102, 102, 255}, true);
-    auto& texts = add({153, 0, 76}, true);
-    auto& eqs = add({0, 255, 0}, true);
-    auto& lists = add({40, 169, 92}, true);
-    auto& list_items = add({40, 169, 92}, false);
-    auto& indices = add({40, 169, 92}, true);
-    auto& dropped = add({158, 158, 158}, true);
+  for (size_t i = 0; i < pdf_info.size(); ++i) {
+    const json& pinfo = pdf_info[i];
+    int page_idx = pinfo.value("page_idx", (int)i);
+    FPDF_PAGE page = FPDF_LoadPage(doc, page_idx);
+    if (!page) continue;
+    double page_h = FPDF_GetPageHeightF(page);
 
-    for (const json& b : page.value("discarded_blocks", json::array()))
-      if (b.contains("bbox")) dropped.push_back(scaled(b["bbox"], sx, sy));
+    // Per-category fills in MinerU's draw order; list_items are stroked. (r,g,b,fill)
+    struct Item { json bbox; RGB c; bool fill; };
+    std::vector<Item> items;          // category boxes, drawn first
+    std::vector<json> numbered;       // layout_bbox_list, reading order
+    auto push_cat = [&](const json& b, RGB c, bool fill) { items.push_back({b, c, fill}); };
 
-    std::vector<std::array<int, 4>> numbered;  // layout_bbox_list, in reading order
-    for (const json& block : source_blocks(page)) {
+    // discarded first collected, but MinerU draws codes/caption/footnote/dropped early; we honor
+    // its exact ordering below by category buckets.
+    std::vector<json> dropped, tb, tcap, tfoot, ib, icap, ifoot, titles, texts, eqs, lists, litems, idx;
+    for (const json& b : pinfo.value("discarded_blocks", json::array()))
+      if (b.contains("bbox")) dropped.push_back(b["bbox"]);
+
+    for (const json& block : source_blocks(pinfo)) {
       std::string t = block.value("type", "");
       if (t == "table" || t == "image" || t == "chart" || t == "code") {
         for (const json& sub : block.value("blocks", json::array())) {
+          if (!sub.contains("bbox") || sub.value("cross_page", false)) continue;
           std::string st = sub.value("type", "");
-          if (!sub.contains("bbox")) continue;
-          if (sub.value("cross_page", false)) continue;
-          auto r = scaled(sub["bbox"], sx, sy);
-          if (st == "table_body") tables_body.push_back(r);
-          else if (st == "table_caption") tables_cap.push_back(r);
-          else if (st == "table_footnote") tables_foot.push_back(r);
-          else if (st == "image_body" || st == "chart_body") imgs_body.push_back(r);
-          else if (st == "image_caption" || st == "chart_caption") imgs_cap.push_back(r);
-          else if (st == "image_footnote" || st == "chart_footnote") imgs_foot.push_back(r);
-          numbered.push_back(r);
+          const json& bb = sub["bbox"];
+          if (st == "table_body") tb.push_back(bb);
+          else if (st == "table_caption") tcap.push_back(bb);
+          else if (st == "table_footnote") tfoot.push_back(bb);
+          else if (st == "image_body" || st == "chart_body") ib.push_back(bb);
+          else if (st == "image_caption" || st == "chart_caption") icap.push_back(bb);
+          else if (st == "image_footnote" || st == "chart_footnote") ifoot.push_back(bb);
+          numbered.push_back(bb);
         }
       } else if (block.contains("bbox")) {
-        auto r = scaled(block["bbox"], sx, sy);
-        if (t == "title") titles.push_back(r);
-        else if (is_text_like(t)) texts.push_back(r);
-        else if (t == "interline_equation") eqs.push_back(r);
-        else if (t == "list") { lists.push_back(r);
+        const json& bb = block["bbox"];
+        if (t == "title") titles.push_back(bb);
+        else if (is_text_like(t)) texts.push_back(bb);
+        else if (t == "interline_equation") eqs.push_back(bb);
+        else if (t == "list") {
+          lists.push_back(bb);
           for (const json& sub : block.value("blocks", json::array()))
-            if (sub.contains("bbox")) list_items.push_back(scaled(sub["bbox"], sx, sy)); }
-        else if (t == "index") indices.push_back(r);
-        if (is_direct_layout(t)) numbered.push_back(r);
+            if (sub.contains("bbox")) litems.push_back(sub["bbox"]);
+        } else if (t == "index") idx.push_back(bb);
+        if (is_direct_layout(t)) numbered.push_back(bb);
       }
     }
+    // Draw order faithful to draw_layout_bbox (codes omitted — pipeline has none here).
+    for (auto& b : dropped) push_cat(b, {158, 158, 158}, true);
+    for (auto& b : tb) push_cat(b, {204, 204, 0}, true);
+    for (auto& b : tcap) push_cat(b, {255, 255, 102}, true);
+    for (auto& b : tfoot) push_cat(b, {229, 255, 204}, true);
+    for (auto& b : ib) push_cat(b, {153, 255, 51}, true);
+    for (auto& b : icap) push_cat(b, {102, 178, 255}, true);
+    for (auto& b : ifoot) push_cat(b, {255, 178, 102}, true);
+    for (auto& b : titles) push_cat(b, {102, 102, 255}, true);
+    for (auto& b : texts) push_cat(b, {153, 0, 76}, true);
+    for (auto& b : eqs) push_cat(b, {0, 255, 0}, true);
+    for (auto& b : lists) push_cat(b, {40, 169, 92}, true);
+    for (auto& b : litems) push_cat(b, {40, 169, 92}, false);
+    for (auto& b : idx) push_cat(b, {40, 169, 92}, true);
 
-    for (const Cat& cat : cats)
-      for (const auto& r : cat.rects) {
-        if (cat.fill) cv.fill_rect(r[0], r[1], r[2], r[3], cat.c, 0.3);
-        else cv.stroke_rect(r[0], r[1], r[2], r[3], cat.c, 1);
-      }
-    // Sequential reading-order numbers (red), top-right of each layout block.
-    int fontpx = std::max(7, (int)std::lround(10.0 * sy));
-    int s = std::max(1, fontpx / 7);
-    for (size_t k = 0; k < numbered.size(); ++k) {
-      const auto& r = numbered[k];
-      int nx = std::min(cv.w - 6 * s * 2, r[2] + 2);
-      cv.number(nx, std::max(0, r[1]), (int)k + 1, s, {255, 0, 0});
-    }
+    for (const Item& it : items) add_rect(page, it.bbox, page_h, it.c, it.fill);
+    for (size_t k = 0; k < numbered.size(); ++k) add_number(doc, page, numbered[k], page_h, (int)k + 1);
 
-    jpegs.push_back(encode_jpeg(cv.px, rp.w, rp.h, jpeg_quality));
-    sizes.push_back({pw, ph});
-    px.push_back({rp.w, rp.h});
+    FPDFPage_GenerateContent(page);
+    FPDF_ClosePage(page);
   }
-  return pages_to_pdf(jpegs, sizes, px);
+
+  std::vector<uint8_t> out = save_doc(doc);
+  FPDF_CloseDocument(doc);
+  pdfium_release();
+  return out;
 }
 
-std::vector<uint8_t> draw_span_pdf(const json& pdf_info, const std::vector<RenderedPage>& pages,
-                                   int jpeg_quality) {
-  std::vector<std::vector<uint8_t>> jpegs;
-  std::vector<std::array<double, 2>> sizes;
-  std::vector<std::array<int, 2>> px;
-  size_t n = std::min(pdf_info.size(), pages.size());
-  for (size_t i = 0; i < n; ++i) {
-    const json& page = pdf_info[i];
-    const RenderedPage& rp = pages[i];
-    double pw = page.contains("page_size") ? page["page_size"][0].get<double>() : rp.page_w_pt;
-    double ph = page.contains("page_size") ? page["page_size"][1].get<double>() : rp.page_h_pt;
-    double sx = pw > 0 ? rp.w / pw : 1.0, sy = ph > 0 ? rp.h / ph : 1.0;
-    Canvas cv{rp.rgb, rp.w, rp.h};
+std::vector<uint8_t> draw_span_pdf(const json& pdf_info, const std::vector<uint8_t>& pdf_bytes) {
+  pdfium_acquire();
+  FPDF_DOCUMENT doc = FPDF_LoadMemDocument(pdf_bytes.data(), (int)pdf_bytes.size(), nullptr);
+  if (!doc) { pdfium_release(); return {}; }
 
-    auto draw_span = [&](const json& span, RGB c) {
-      if (span.contains("bbox")) { auto r = scaled(span["bbox"], sx, sy); cv.stroke_rect(r[0], r[1], r[2], r[3], c, 1); }
+  for (size_t i = 0; i < pdf_info.size(); ++i) {
+    const json& pinfo = pdf_info[i];
+    int page_idx = pinfo.value("page_idx", (int)i);
+    FPDF_PAGE page = FPDF_LoadPage(doc, page_idx);
+    if (!page) continue;
+    double page_h = FPDF_GetPageHeightF(page);
+
+    auto span_color = [](const std::string& st, RGB& c) -> bool {
+      if (st == "text") { c = {255, 0, 0}; return true; }
+      if (st == "inline_equation") { c = {0, 255, 0}; return true; }
+      if (st == "interline_equation") { c = {0, 0, 255}; return true; }
+      if (st == "image" || st == "chart") { c = {255, 204, 0}; return true; }
+      if (st == "table") { c = {204, 0, 255}; return true; }
+      return false;
     };
     auto walk = [&](const json& block) {
       for (const json& line : block.value("lines", json::array()))
         for (const json& span : line.value("spans", json::array())) {
-          std::string st = span.value("type", "");
-          if (st == "text") draw_span(span, {255, 0, 0});
-          else if (st == "inline_equation") draw_span(span, {0, 255, 0});
-          else if (st == "interline_equation") draw_span(span, {0, 0, 255});
-          else if (st == "image" || st == "chart") draw_span(span, {255, 204, 0});
-          else if (st == "table") draw_span(span, {204, 0, 255});
+          RGB c{};
+          if (span.contains("bbox") && span_color(span.value("type", ""), c))
+            add_rect(page, span["bbox"], page_h, c, /*fill=*/false);
         }
     };
-    for (const json& b : page.value("discarded_blocks", json::array()))
+    for (const json& b : pinfo.value("discarded_blocks", json::array()))
       for (const json& line : b.value("lines", json::array()))
         for (const json& span : line.value("spans", json::array()))
-          draw_span(span, {158, 158, 158});
-    for (const json& block : source_blocks(page)) {
+          if (span.contains("bbox")) add_rect(page, span["bbox"], page_h, {158, 158, 158}, false);
+    for (const json& block : source_blocks(pinfo)) {
       std::string t = block.value("type", "");
       if (t == "table" || t == "image" || t == "chart" || t == "code")
         for (const json& sub : block.value("blocks", json::array())) walk(sub);
       else
         walk(block);
     }
-    jpegs.push_back(encode_jpeg(cv.px, rp.w, rp.h, jpeg_quality));
-    sizes.push_back({pw, ph});
-    px.push_back({rp.w, rp.h});
+    FPDFPage_GenerateContent(page);
+    FPDF_ClosePage(page);
   }
-  return pages_to_pdf(jpegs, sizes, px);
+
+  std::vector<uint8_t> out = save_doc(doc);
+  FPDF_CloseDocument(doc);
+  pdfium_release();
+  return out;
 }
 
 }  // namespace mineru

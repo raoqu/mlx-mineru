@@ -70,7 +70,7 @@
 |---|---|---|
 | Markdown（mm/nlp） | ✅ | ✅（union_make 字节级一致） |
 | content_list（v1/v2） | ✅ | ✅（renderer 一致；pipeline 图片抽取未接） |
-| layout.pdf / span.pdf（draw_bbox 可视化） | ✅ | ✅（光栅叠加，分类色块+阅读序编号；web 预览高亮 layout） |
+| layout.pdf / span.pdf（draw_bbox 可视化） | ✅ | ✅（pdfium 矢量叠加，原页文本可选；分类色块+阅读序编号；web 预览高亮 layout） |
 | 图片抽取落盘（cut_image_and_table） | ✅ | 🟡 VLM 路径有；pipeline 未接 |
 | OCR 多语言（~14 语，模型/字典各异） | ✅ | ❌ 仅 `ch`（ppocrv6） |
 | CLI `--backend pipeline` | ✅ | ✅ `mlx-mineru --backend pipeline -p a.pdf` 出 md/content_list/middle |

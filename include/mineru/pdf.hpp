@@ -56,4 +56,9 @@ class PdfDocument {
   std::unique_ptr<Impl> impl_;
 };
 
+// Acquire/release the global pdfium library (ref-counted, thread-safe). PdfDocument brackets
+// this automatically; standalone FPDF_* users (e.g. the draw_bbox overlay) call these directly.
+void pdfium_acquire();
+void pdfium_release();
+
 }  // namespace mineru

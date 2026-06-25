@@ -1,9 +1,8 @@
 // Copyright (c) mlx-mineru.
-// Layout / span visualization PDFs — the C++ analogue of MinerU draw_bbox.py. MinerU's gradio
-// preview displays {name}_layout.pdf (translucent per-category boxes + red reading-order
-// numbers). We reproduce it as a raster overlay: each rendered page + colored boxes baked in,
-// wrapped back into a single PDF. Faithful to draw_layout_bbox / draw_span_bbox geometry &
-// colors. The caller supplies pre-rendered pages (one per pdf_info page, same order).
+// Layout / span visualization PDFs — faithful C++ port of MinerU draw_bbox.py. Draws a vector
+// overlay (translucent per-category boxes + red reading-order numbers) directly onto the
+// original PDF pages via pdfium edit APIs, so the page content stays vector and the text under
+// the boxes remains selectable — exactly like MinerU's reportlab+pypdf layout.pdf / span.pdf.
 #pragma once
 
 #include <cstdint>
@@ -13,19 +12,14 @@
 
 namespace mineru {
 
-struct RenderedPage {
-  std::vector<uint8_t> rgb;  // w*h*3, top-down RGB8
-  int w = 0, h = 0;
-  double page_w_pt = 0.0, page_h_pt = 0.0;  // PDF page size in points (bbox space)
-};
-
 // {name}_layout.pdf: category fills (text/title/table/image/...) + sequential reading-order
-// numbers, drawn from preproc_blocks (fallback para_blocks) + discarded_blocks.
+// numbers, from preproc_blocks (fallback para_blocks) + discarded_blocks. pdf_bytes is the
+// parsed PDF (same one the pdf_info was produced from).
 std::vector<uint8_t> draw_layout_pdf(const nlohmann::json& pdf_info,
-                                     const std::vector<RenderedPage>& pages, int jpeg_quality = 80);
+                                     const std::vector<uint8_t>& pdf_bytes);
 
 // {name}_span.pdf: per-span stroked boxes (text/equation/image/table/dropped), no numbers.
 std::vector<uint8_t> draw_span_pdf(const nlohmann::json& pdf_info,
-                                   const std::vector<RenderedPage>& pages, int jpeg_quality = 80);
+                                   const std::vector<uint8_t>& pdf_bytes);
 
 }  // namespace mineru

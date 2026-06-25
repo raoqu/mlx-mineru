@@ -112,7 +112,6 @@ add_library(mineru_core STATIC
   src/output/mkcontent.cpp
   src/io/image_write.cpp
   src/io/image_to_pdf.cpp
-  src/io/draw_bbox.cpp
 )
 target_include_directories(mineru_core PUBLIC
   ${CMAKE_SOURCE_DIR}/include
@@ -178,7 +177,7 @@ add_test(
 
 # ---- PDF rasterization (pdfium) ---------------------------------------------
 if(HAVE_PDFIUM)
-  add_library(mineru_pdf STATIC src/io/pdf.cpp)
+  add_library(mineru_pdf STATIC src/io/pdf.cpp src/io/draw_bbox.cpp)
   target_include_directories(mineru_pdf PUBLIC ${CMAKE_SOURCE_DIR}/include)
   target_link_libraries(mineru_pdf PUBLIC pdfium thirdparty_headers)
 
