@@ -10,7 +10,10 @@
 #include <set>
 #include <stdexcept>
 
+#include <filesystem>
+
 #include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
+#include "mnn_runner.hpp"        // hybrid MNN path (Metal-accelerated encoder + decoder)
 #include "onnxruntime_cxx_api.h"
 #ifdef MINERU_HAVE_OPENCV
 #include <opencv2/imgproc.hpp>
@@ -22,6 +25,12 @@ namespace {
 constexpr int kTargetH = 192, kTargetW = 672;
 constexpr int kBOS = 0, kEOS = 2, kMaxNewTokens = 1536;
 const std::set<int> kSpecialIds = {0, 1, 2, 3, 4, 5, 6, 7};
+
+// Merged KV-cache decoder I/O (see scripts/export_mfr_onnx.py): each of the 8 mBART decoder
+// layers caches self-attention K (head_dim 24) and V (head_dim 48) across steps; cross-attention
+// is recomputed from encoder_hidden each step. Inputs: input_ids[1,1], attention_mask[1,L],
+// encoder_hidden_states[1,N,768], self_past_0..15; outputs: logits, self_present_0..15.
+constexpr int kDecLayers = 8, kHeads = 16, kKeyDim = 24, kValDim = 48;
 
 // GPT-2 byte<->unicode map: codepoint -> original byte.
 std::array<int, 0x200> build_u2b() {
@@ -69,7 +78,8 @@ struct FormulaRecognizer::Impl {
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-mfr"};
   Ort::SessionOptions opts;
   std::unique_ptr<Ort::Session> enc, dec;
-  std::string enc_in, enc_out, dec_in_ids, dec_in_hid, dec_out;
+  std::unique_ptr<MnnRunner> enc_mnn;  // Metal-accelerated encoder when a `.mnn` sibling exists
+  std::string enc_in, enc_out;
   std::vector<std::string> vocab;  // id -> token
   std::array<int, 0x200> u2b;
 };
@@ -106,9 +116,17 @@ FormulaRecognizer FormulaRecognizer::load(const std::string& encoder_onnx,
   Ort::AllocatorWithDefaultOptions alloc;
   m.enc_in = m.enc->GetInputNameAllocated(0, alloc).get();
   m.enc_out = m.enc->GetOutputNameAllocated(0, alloc).get();
-  m.dec_in_ids = m.dec->GetInputNameAllocated(0, alloc).get();
-  m.dec_in_hid = m.dec->GetInputNameAllocated(1, alloc).get();
-  m.dec_out = m.dec->GetOutputNameAllocated(0, alloc).get();
+  // The decoder uses the fixed KV-cache I/O names from export_mfr_onnx.py (input_ids,
+  // attention_mask, encoder_hidden_states, self_past_*/self_present_*) — no lookup needed.
+  //
+  // Prefer a `<encoder>.mnn` sibling (Metal-accelerated Swin encoder, ~6.5x; comparable on CPU),
+  // falling back to ORT if it's missing or fails to load. The decoder always runs on ORT (the
+  // KV cache already makes it fast and backend-independent).
+  if (encoder_onnx.size() > 5 && encoder_onnx.substr(encoder_onnx.size() - 5) == ".onnx") {
+    std::string mp = encoder_onnx.substr(0, encoder_onnx.size() - 5) + ".mnn";
+    std::error_code ec;
+    if (std::filesystem::exists(mp, ec)) m.enc_mnn = MnnRunner::load(mp, {m.enc_in}, {m.enc_out});
+  }
   return r;
 }
 
@@ -122,42 +140,91 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
   for (int c = 0; c < 3; ++c)
     std::copy(gray.begin(), gray.begin() + static_cast<size_t>(H) * W,
               px.begin() + static_cast<size_t>(c) * H * W);
-  std::array<int64_t, 4> pshape{1, 3, H, W};
-  Ort::Value pv = Ort::Value::CreateTensor<float>(mi, px.data(), px.size(), pshape.data(), 4);
-  const char* ein[] = {m.enc_in.c_str()};
-  const char* eout[] = {m.enc_out.c_str()};
-  auto enc_outs =
-      const_cast<Ort::Session&>(*m.enc).Run(Ort::RunOptions{nullptr}, ein, &pv, 1, eout, 1);
-  auto hshape = enc_outs[0].GetTensorTypeAndShapeInfo().GetShape();
-  int N = static_cast<int>(hshape[1]), D = static_cast<int>(hshape[2]);
-  const float* hsrc = enc_outs[0].GetTensorData<float>();
-  std::vector<float> hid(hsrc, hsrc + static_cast<size_t>(N) * D);
+  std::vector<float> hid;
+  int N = 0, D = 0;
+  if (m.enc_mnn) {  // MNN/Metal encoder
+    std::vector<std::vector<float>> eo;
+    std::vector<std::vector<int>> es;
+    if (!m.enc_mnn->run(px.data(), {1, 3, H, W}, eo, es) || eo.empty() || es[0].size() < 3)
+      throw std::runtime_error("mfr: MNN encoder failed");
+    N = es[0][1];
+    D = es[0][2];
+    hid = std::move(eo[0]);
+  } else {  // ONNX Runtime encoder
+    std::array<int64_t, 4> pshape{1, 3, H, W};
+    Ort::Value pv = Ort::Value::CreateTensor<float>(mi, px.data(), px.size(), pshape.data(), 4);
+    const char* ein[] = {m.enc_in.c_str()};
+    const char* eout[] = {m.enc_out.c_str()};
+    auto enc_outs =
+        const_cast<Ort::Session&>(*m.enc).Run(Ort::RunOptions{nullptr}, ein, &pv, 1, eout, 1);
+    auto hshape = enc_outs[0].GetTensorTypeAndShapeInfo().GetShape();
+    N = static_cast<int>(hshape[1]);
+    D = static_cast<int>(hshape[2]);
+    const float* hsrc = enc_outs[0].GetTensorData<float>();
+    hid.assign(hsrc, hsrc + static_cast<size_t>(N) * D);
+  }
   std::array<int64_t, 3> hidshape{1, N, D};
 
-  // Greedy decode (recompute full sequence each step).
+  // Greedy decode with a KV cache: the merged decoder graph caches each layer's self-attention
+  // K/V (fed back present->past every step) so a step processes only the new token, instead of
+  // recomputing the whole prefix (O(T) instead of O(T^2)). Cross-attention is recomputed from
+  // encoder_hidden each step (cheap, O(N)). See scripts/export_mfr_onnx.py.
+  static const std::vector<std::string> kInNamesS = [] {
+    std::vector<std::string> v{"input_ids", "attention_mask", "encoder_hidden_states"};
+    for (int i = 0; i < 2 * kDecLayers; ++i) v.push_back("self_past_" + std::to_string(i));
+    return v;
+  }();
+  static const std::vector<std::string> kOutNamesS = [] {
+    std::vector<std::string> v{"logits"};
+    for (int i = 0; i < 2 * kDecLayers; ++i) v.push_back("self_present_" + std::to_string(i));
+    return v;
+  }();
+  std::vector<const char*> in_names, out_names;
+  for (auto& s : kInNamesS) in_names.push_back(s.c_str());
+  for (auto& s : kOutNamesS) out_names.push_back(s.c_str());
+
+  // Cache tensors, fed as self_past_* and replaced by self_present_* each step. Start empty
+  // (self-attn sequence length 0) so the first call is the prefill.
+  std::vector<Ort::Value> cache;
+  cache.reserve(2 * kDecLayers);
+  std::vector<std::vector<float>> empty(2 * kDecLayers);  // backs the seq-0 prefill tensors
+  for (int i = 0; i < 2 * kDecLayers; ++i) {
+    int64_t dim = (i % 2 == 0) ? kKeyDim : kValDim;
+    std::array<int64_t, 4> sh{1, kHeads, 0, dim};
+    cache.push_back(Ort::Value::CreateTensor<float>(mi, empty[i].data(), 0, sh.data(), 4));
+  }
+
   FormulaResult res;
-  std::vector<int64_t> seq{kBOS};
-  const char* din[] = {m.dec_in_ids.c_str(), m.dec_in_hid.c_str()};
-  const char* dout[] = {m.dec_out.c_str()};
+  int64_t cur = kBOS;
   for (int step = 0; step < kMaxNewTokens; ++step) {
-    std::array<int64_t, 2> ishape{1, (int64_t)seq.size()};
-    Ort::Value ids =
-        Ort::Value::CreateTensor<int64_t>(mi, seq.data(), seq.size(), ishape.data(), 2);
-    Ort::Value hv =
-        Ort::Value::CreateTensor<float>(mi, hid.data(), hid.size(), hidshape.data(), 3);
-    std::array<Ort::Value, 2> ins{std::move(ids), std::move(hv)};
-    auto outs = const_cast<Ort::Session&>(*m.dec).Run(Ort::RunOptions{nullptr}, din, ins.data(),
-                                                      2, dout, 1);
+    int64_t id_val = cur;
+    std::array<int64_t, 2> ishape{1, 1};
+    std::vector<int64_t> mask(step + 1, 1);  // attention over all tokens so far (length = step+1)
+    std::array<int64_t, 2> mshape{1, step + 1};
+
+    std::vector<Ort::Value> inputs;
+    inputs.reserve(3 + 2 * kDecLayers);
+    inputs.push_back(Ort::Value::CreateTensor<int64_t>(mi, &id_val, 1, ishape.data(), 2));
+    inputs.push_back(Ort::Value::CreateTensor<int64_t>(mi, mask.data(), mask.size(), mshape.data(), 2));
+    inputs.push_back(Ort::Value::CreateTensor<float>(mi, hid.data(), hid.size(), hidshape.data(), 3));
+    for (auto& c : cache) inputs.push_back(std::move(c));  // self_past_* (consumed this step)
+
+    auto outs = const_cast<Ort::Session&>(*m.dec).Run(
+        Ort::RunOptions{nullptr}, in_names.data(), inputs.data(), inputs.size(), out_names.data(),
+        out_names.size());
+
     auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
-    int T = static_cast<int>(oshape[1]), V = static_cast<int>(oshape[2]);
-    const float* logits = outs[0].GetTensorData<float>() + static_cast<size_t>(T - 1) * V;
+    int V = static_cast<int>(oshape.back());  // logits [1,1,V]
+    const float* logits = outs[0].GetTensorData<float>();
     int best = 0;
     float bv = logits[0];
     for (int v = 1; v < V; ++v)
       if (logits[v] > bv) { bv = logits[v]; best = v; }
     res.ids.push_back(best);
-    seq.push_back(best);
     if (best == kEOS) break;
+    cur = best;
+    cache.clear();  // present -> past for the next step (no copy; reuse ORT-owned buffers)
+    for (int i = 0; i < 2 * kDecLayers; ++i) cache.push_back(std::move(outs[1 + i]));
   }
 
   // Byte-level decode (skip special tokens).
