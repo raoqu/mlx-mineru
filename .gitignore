@@ -27,6 +27,9 @@ compile_commands.json
 # CLI output
 /output/
 
+# PDFs (test inputs / scratch) — not tracked; fixtures are fetched/placed locally
+*.pdf
+
 # Vendored MLX runtime (large) — fetch via scripts/fetch_mlx.sh
 /third_party/mlx/
 
