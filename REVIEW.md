@@ -83,9 +83,18 @@
 ## 3. hybrid-engine
 
 源项目 hybrid = pipeline 结构 + VLM 关键区域理解。本项目 hybrid = **pipeline 全量结构
-（版面/OCR/公式/表格）+ VLM 仅对 image/chart 裁剪做理解**（`image_analysis` 控制）。
-🟡 近似：源项目 hybrid 的 `effort`(medium/high) 与具体融合策略更细；本项目 effort 已在 UI 暴露
-但当前 hybrid 恒用 VLM 处理图像块。
+（版面/OCR/公式/表格）+ VLM 对 image/chart 裁剪做理解**（`image_analysis` 控制）。
+
+🔧 **effort 门控（对齐 `_resolve_effective_image_analysis`）**：源项目 hybrid 的 `medium`（默认）
+**强制关闭 image/chart 理解**走快速路径，仅 `high` 才按 `image_analysis` 跑 VLM 理解。此前本项目
+hybrid 恒跑 VLM 理解（与源项目 medium 不一致：多出每张图/图表一次 VLM 推理，且输出多余的
+`<details>chart content</details>`）。现 `understand = hybrid && image_analysis && effort!="medium"`：
+- medium（默认）：不跑理解 → 图表渲染为纯 `![]()`，无 "chart content"，~2s（验证）。
+- high：跑理解 → 含 "chart content"（验证 count=1）。
+- pipeline：从不理解图表 → 纯图像（与源项目 pipeline 一致，验证 count=0）。
+
+🟡 仍近似：源项目 hybrid 在 medium 下用 VLM 做整窗文本抽取 + pipeline 结构融合的细节更复杂；
+本项目 medium 仅跳过视觉理解，文本仍走 pipeline OCR。
 
 ---
 

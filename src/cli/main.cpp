@@ -731,9 +731,12 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
       }
       json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pl->rec);
       // Inline image/chart crops as base64 data URIs so they render in the UI; in hybrid
-      // mode also fill the span content via the VLM (when image_analysis is on).
+      // mode also fill the span content via the VLM. Faithful to MinerU
+      // _resolve_effective_image_analysis: medium effort forces image/chart understanding OFF
+      // (fast path, no "chart content"); only high effort honors image_analysis.
       bool hybrid = (o.backend == "hybrid-engine");
-      if (hybrid && o.image_analysis) ensure_vlm();
+      bool understand = hybrid && o.image_analysis && o.effort != "medium";
+      if (understand) ensure_vlm();
       for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
         double scale = pages[p].page_w > 0 ? (double)dims[p].first / pages[p].page_w : 1.0;
         for (auto& blk : pdf_info[p]["para_blocks"]) {
@@ -748,7 +751,7 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
                                         scale, cw, ch);
                 if (cw <= 0 || ch <= 0) continue;
                 sp["image_path"] = jpg_data_uri(crop, cw, ch);
-                if (hybrid && o.image_analysis)
+                if (understand)
                   sp["content"] = vlm_understand(*vmodel, *vtok, std::move(crop), cw, ch, t);
               }
         }
