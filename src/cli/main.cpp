@@ -10,6 +10,9 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #include <functional>
 #include <mutex>
@@ -575,6 +578,29 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
   return pdf_info;
 }
 
+// Locate a model directory by name (e.g. "mumodel"), searching the working directory and the
+// executable's directory (plus its parents). Lets models resolve whether the app is launched
+// from the source tree, an install dir, or an unrelated working directory. Returns the bare
+// name (cwd-relative) if nothing is found, so an explicit --model/--pipeline-models still works.
+static std::string find_model_root(const std::string& name) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  std::vector<fs::path> cands = {fs::path(name)};  // ./<name> relative to the working directory
+#ifdef __APPLE__
+  char buf[4096];
+  uint32_t sz = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &sz) == 0) {
+    fs::path d = fs::weakly_canonical(fs::path(buf), ec).parent_path();
+    cands.push_back(d / name);                            // next to the executable
+    cands.push_back(d.parent_path() / name);              // <exe>/../<name>  (e.g. build/ -> repo)
+    cands.push_back(d.parent_path().parent_path() / name);
+  }
+#endif
+  for (const fs::path& c : cands)
+    if (fs::is_directory(c, ec)) return c.lexically_normal().string();
+  return name;
+}
+
 // Read an input file as PDF bytes. Image inputs (png/jpeg/bmp/gif/...) are wrapped into a
 // single-page PDF, faithful to MinerU read_fn -> images_bytes_to_pdf_bytes; PDFs pass through.
 static std::vector<uint8_t> read_input_as_pdf_bytes(const std::string& path) {
@@ -846,16 +872,19 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
 
 int main(int argc, char** argv) {
   CLI::App app{"mlx-mineru — native C++/MLX MinerU (PDF -> Markdown)"};
-  std::string pdf_path, model_dir = "models/MinerU2.5-tokenizer", out_dir = "output";
-  std::string host = "127.0.0.1", backend = "vlm", pipeline_models = "models/pipeline";
+  // Runtime models live under mumodel/, discovered relative to the cwd or the executable.
+  const std::string mroot = find_model_root("mumodel");
+  std::string pdf_path, model_dir = mroot + "/MinerU2.5-tokenizer", out_dir = "output";
+  std::string host = "127.0.0.1", backend = "vlm", pipeline_models = mroot + "/pipeline";
   int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6, pipeline_dpi = 200;
   bool layout_only = false, server = false, no_image_rec = false, web = false;
   app.add_option("-b,--backend", backend, "Backend: vlm (default) | pipeline (native ONNX CV)");
   app.add_option("--pipeline-models", pipeline_models,
-                 "Pipeline backend model dir (default models/pipeline)");
+                 "Pipeline backend model dir (default <mumodel>/pipeline, auto-discovered)");
   app.add_option("--pipeline-dpi", pipeline_dpi, "Pipeline render DPI (default 200)");
   app.add_option("-p,--path", pdf_path, "Input PDF path (not needed with --server)");
-  app.add_option("-m,--model", model_dir, "Model directory (weights + tokenizer)");
+  app.add_option("-m,--model", model_dir,
+                 "VLM model dir (default <mumodel>/MinerU2.5-tokenizer, auto-discovered)");
   app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
   app.add_option("-e,--end", end_page, "Last 0-based page inclusive (default: last)");
   app.add_option("-o,--output", out_dir, "Output directory (MinerU layout: <out>/<name>/vlm/)");

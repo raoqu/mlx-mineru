@@ -5,9 +5,11 @@
 *.dylib
 *.so
 
-# Models (downloaded at runtime, large)
+# Models (large) — runtime files in mumodel/, unused pre-conversion originals in orgmodel/
 /models/*
 !/models/.gitkeep
+/mumodel/
+/orgmodel/
 
 # Editor / OS
 .DS_Store

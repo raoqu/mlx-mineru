@@ -231,7 +231,7 @@ add_executable(test_tokenizer tests/test_tokenizer.cpp)
 target_include_directories(test_tokenizer PRIVATE ${CMAKE_SOURCE_DIR}/tests)
 target_link_libraries(test_tokenizer PRIVATE mineru_vlm)
 add_test(NAME tokenizer
-  COMMAND test_tokenizer ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer
+  COMMAND test_tokenizer ${CMAKE_SOURCE_DIR}/mumodel/MinerU2.5-tokenizer
           ${CMAKE_SOURCE_DIR}/tests/golden/tokenizer.json)
 
 add_executable(test_preprocess tests/test_preprocess.cpp)
@@ -283,7 +283,7 @@ if(HAVE_MLX)
     set_target_properties(mlx-mineru PROPERTIES BUILD_RPATH "${MLX_MINERU_RPATH}")
   endif()
 
-  set(MODEL_ST ${CMAKE_SOURCE_DIR}/models/MinerU2.5-tokenizer/model.safetensors)
+  set(MODEL_ST ${CMAKE_SOURCE_DIR}/mumodel/MinerU2.5-tokenizer/model.safetensors)
   if(EXISTS ${MODEL_ST})
     add_executable(test_llm_forward tests/test_llm_forward.cpp)
     target_include_directories(test_llm_forward PRIVATE ${CMAKE_SOURCE_DIR}/tests)
@@ -315,24 +315,24 @@ if(HAVE_MLX)
 endif()
 
 # ---- ONNX Runtime smoke test (pipeline) -------------------------------------
-if(HAVE_ORT AND EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
+if(HAVE_ORT AND EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/Layout/layout.onnx)
   add_executable(test_onnx_smoke tests/test_onnx_smoke.cpp)
   target_include_directories(test_onnx_smoke PRIVATE ${CMAKE_SOURCE_DIR}/tests)
   target_link_libraries(test_onnx_smoke PRIVATE onnxruntime)
   set_target_properties(test_onnx_smoke PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
   add_test(NAME onnx_smoke
-    COMMAND test_onnx_smoke ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
+    COMMAND test_onnx_smoke ${CMAKE_SOURCE_DIR}/mumodel/pipeline/Layout/layout.onnx)
 endif()
 
 # ---- Pipeline backend tests (library defined earlier) -----------------------
 if(HAVE_ORT)
-  if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx)
+  if(EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/Layout/layout.onnx)
     add_executable(test_layout_det tests/test_layout_det.cpp)
     target_include_directories(test_layout_det PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_layout_det PRIVATE mineru_pipeline)
     set_target_properties(test_layout_det PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME layout_det
-      COMMAND test_layout_det ${CMAKE_SOURCE_DIR}/models/pipeline/Layout
+      COMMAND test_layout_det ${CMAKE_SOURCE_DIR}/mumodel/pipeline/Layout
               ${CMAKE_SOURCE_DIR}/tests/golden)
 
     if(HAVE_PDFIUM AND EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/pipeline_p0_model.json)
@@ -340,29 +340,29 @@ if(HAVE_ORT)
       target_include_directories(test_layout_order PRIVATE ${CMAKE_SOURCE_DIR}/tests)
       target_link_libraries(test_layout_order PRIVATE mineru_pipeline mineru_pdf)
       set_target_properties(test_layout_order PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
-      add_test(NAME layout_order COMMAND test_layout_order ${CMAKE_SOURCE_DIR}/models/pipeline/Layout
+      add_test(NAME layout_order COMMAND test_layout_order ${CMAKE_SOURCE_DIR}/mumodel/pipeline/Layout
                 ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/a.pdf)
     endif()
   endif()
 
-  if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/TabCls/PP-LCNet_x1_0_table_cls.onnx)
+  if(EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabCls/PP-LCNet_x1_0_table_cls.onnx)
     add_executable(test_tab_cls tests/test_tab_cls.cpp)
     target_include_directories(test_tab_cls PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_tab_cls PRIVATE mineru_pipeline)
     set_target_properties(test_tab_cls PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME tab_cls
-      COMMAND test_tab_cls ${CMAKE_SOURCE_DIR}/models/pipeline/TabCls/PP-LCNet_x1_0_table_cls.onnx
+      COMMAND test_tab_cls ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabCls/PP-LCNet_x1_0_table_cls.onnx
               ${CMAKE_SOURCE_DIR}/tests/golden)
   endif()
 
-  if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx)
+  if(EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx)
     add_executable(test_ocr_rec tests/test_ocr_rec.cpp)
     target_include_directories(test_ocr_rec PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_ocr_rec PRIVATE mineru_pipeline)
     set_target_properties(test_ocr_rec PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME ocr_rec
-      COMMAND test_ocr_rec ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
+      COMMAND test_ocr_rec ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/tests/golden)
   endif()
 
@@ -372,31 +372,31 @@ if(HAVE_ORT)
     target_link_libraries(test_ocr_det PRIVATE mineru_pipeline)
     set_target_properties(test_ocr_det PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME ocr_det COMMAND test_ocr_det ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx)
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_det.onnx)
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/ocr_page.json AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx)
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_det.onnx AND
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx)
     add_executable(test_ocr_page tests/test_ocr_page.cpp)
     target_include_directories(test_ocr_page PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_ocr_page PRIVATE mineru_pipeline)
     set_target_properties(test_ocr_page PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME ocr_page COMMAND test_ocr_page ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt)
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_det.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ppocrv6_dict.txt)
   endif()
 
   if(HAVE_PDFIUM AND EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/pipeline_p0_model.json AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx)
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx)
     add_executable(test_pipeline_textfill tests/test_pipeline_textfill.cpp)
     target_include_directories(test_pipeline_textfill PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_pipeline_textfill PRIVATE mineru_pipeline mineru_core mineru_pdf)
     set_target_properties(test_pipeline_textfill PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
     add_test(NAME pipeline_textfill COMMAND test_pipeline_textfill ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/a.pdf)
 
     add_executable(test_pipeline_md tests/test_pipeline_md.cpp)
@@ -404,8 +404,8 @@ if(HAVE_ORT)
     target_link_libraries(test_pipeline_md PRIVATE mineru_pipeline mineru_core mineru_pdf)
     set_target_properties(test_pipeline_md PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
     add_test(NAME pipeline_md COMMAND test_pipeline_md ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/a.pdf)
 
     add_executable(test_pipeline_multipage tests/test_pipeline_multipage.cpp)
@@ -413,76 +413,76 @@ if(HAVE_ORT)
     target_link_libraries(test_pipeline_multipage PRIVATE mineru_pipeline mineru_core mineru_pdf)
     set_target_properties(test_pipeline_multipage PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
     add_test(NAME pipeline_multipage COMMAND test_pipeline_multipage ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_rec.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ppocrv6_dict.txt
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_rec.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ppocrv6_dict.txt
               ${CMAKE_SOURCE_DIR}/a.pdf)
 
-    if(EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/Layout/layout.onnx AND
-       EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/OCR/ocr_det.onnx)
+    if(EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/Layout/layout.onnx AND
+       EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/OCR/ocr_det.onnx)
       add_executable(test_pipeline_scratch tests/test_pipeline_scratch.cpp)
       target_include_directories(test_pipeline_scratch PRIVATE ${CMAKE_SOURCE_DIR}/tests)
       target_link_libraries(test_pipeline_scratch PRIVATE mineru_pipeline mineru_core mineru_pdf)
       set_target_properties(test_pipeline_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
       add_test(NAME pipeline_scratch COMMAND test_pipeline_scratch ${CMAKE_SOURCE_DIR}/tests/golden
-                ${CMAKE_SOURCE_DIR}/models/pipeline ${CMAKE_SOURCE_DIR}/a.pdf)
+                ${CMAKE_SOURCE_DIR}/mumodel/pipeline ${CMAKE_SOURCE_DIR}/a.pdf)
 
       if(EXISTS ${CMAKE_SOURCE_DIR}/tests/demo1.pdf AND
          EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p2_model.json AND
-         EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_encoder.onnx)
+         EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_encoder.onnx)
         add_executable(test_pipeline_formula_scratch tests/test_pipeline_formula_scratch.cpp)
         target_include_directories(test_pipeline_formula_scratch PRIVATE ${CMAKE_SOURCE_DIR}/tests)
         target_link_libraries(test_pipeline_formula_scratch PRIVATE mineru_pipeline mineru_core mineru_pdf)
         set_target_properties(test_pipeline_formula_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
         add_test(NAME pipeline_formula_scratch COMMAND test_pipeline_formula_scratch
-                  ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/models/pipeline
+                  ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/mumodel/pipeline
                   ${CMAKE_SOURCE_DIR}/tests/demo1.pdf)
       endif()
 
       if(EXISTS ${CMAKE_SOURCE_DIR}/tests/demo1.pdf AND
          EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/demo1_p5_model.json AND
-         EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/SlanetPlus/slanet-plus.onnx)
+         EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabRec/SlanetPlus/slanet-plus.onnx)
         add_executable(test_pipeline_table_scratch tests/test_pipeline_table_scratch.cpp)
         target_include_directories(test_pipeline_table_scratch PRIVATE ${CMAKE_SOURCE_DIR}/tests)
         target_link_libraries(test_pipeline_table_scratch PRIVATE mineru_pipeline mineru_core mineru_pdf)
         set_target_properties(test_pipeline_table_scratch PROPERTIES BUILD_RPATH "${ORT_DIR}/lib;${PDFIUM_DIR}/lib")
         add_test(NAME pipeline_table_scratch COMMAND test_pipeline_table_scratch
-                  ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/models/pipeline
+                  ${CMAKE_SOURCE_DIR}/tests/golden ${CMAKE_SOURCE_DIR}/mumodel/pipeline
                   ${CMAKE_SOURCE_DIR}/tests/demo1.pdf)
       endif()
     endif()
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/mfr.json AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_encoder.onnx AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_decoder.onnx)
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_encoder.onnx AND
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_decoder.onnx)
     add_executable(test_mfr tests/test_mfr.cpp)
     target_include_directories(test_mfr PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_mfr PRIVATE mineru_pipeline)
     set_target_properties(test_mfr PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME mfr COMMAND test_mfr ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_encoder.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_decoder.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/MFR/mfr_vocab.txt)
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_encoder.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_decoder.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_vocab.txt)
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/wired_table.json AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/UnetStructure/unet.onnx)
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabRec/UnetStructure/unet.onnx)
     add_executable(test_wired_table tests/test_wired_table.cpp)
     target_include_directories(test_wired_table PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_wired_table PRIVATE mineru_pipeline)
     set_target_properties(test_wired_table PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME wired_table COMMAND test_wired_table ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/UnetStructure/unet.onnx)
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabRec/UnetStructure/unet.onnx)
   endif()
 
   if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/table_struct.json AND
-     EXISTS ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/SlanetPlus/slanet-plus.onnx)
+     EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabRec/SlanetPlus/slanet-plus.onnx)
     add_executable(test_table tests/test_table.cpp)
     target_include_directories(test_table PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_link_libraries(test_table PRIVATE mineru_pipeline)
     set_target_properties(test_table PROPERTIES BUILD_RPATH ${ORT_DIR}/lib)
     add_test(NAME table COMMAND test_table ${CMAKE_SOURCE_DIR}/tests/golden
-              ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/SlanetPlus/slanet-plus.onnx
-              ${CMAKE_SOURCE_DIR}/models/pipeline/TabRec/SlanetPlus/table_structure_dict.txt)
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabRec/SlanetPlus/slanet-plus.onnx
+              ${CMAKE_SOURCE_DIR}/mumodel/pipeline/TabRec/SlanetPlus/table_structure_dict.txt)
   endif()
 endif()
