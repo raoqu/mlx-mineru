@@ -124,8 +124,27 @@ if(HAVE_MLX AND MLX_STATIC AND EXISTS ${MLX_LIB_DIR}/mlx.metallib)
 endif()
 
 # ---- ONNX Runtime (C++; pipeline backend) -----------------------------------
+# Preferred: a CPU-only *static* libonnxruntime.a built from source
+# (scripts/build_onnxruntime_static.sh) so the binary carries no libonnxruntime.dylib at
+# runtime. MUST be linked with -force_load so ORT's static kernel-registration initializers
+# survive (otherwise inference fails with "no suitable kernel"). Fallback: the pip dylib.
+set(ORT_STATIC_DIR ${CMAKE_SOURCE_DIR}/third_party/onnxruntime-static)
 set(ORT_DIR ${CMAKE_SOURCE_DIR}/third_party/onnxruntime)
-if(EXISTS ${ORT_DIR}/lib/libonnxruntime.dylib)
+set(ORT_STATIC FALSE)
+set(_ort_real "")
+if(EXISTS ${ORT_STATIC_DIR}/lib/libonnxruntime.a)
+  add_library(onnxruntime INTERFACE)
+  target_include_directories(onnxruntime INTERFACE ${ORT_STATIC_DIR}/include)
+  # force_load ONLY the providers archive (the CPU-kernel static-registration initializers);
+  # link the rest normally so the linker de-dupes onnx/onnx_proto/protobuf overlaps.
+  target_link_libraries(onnxruntime INTERFACE
+    "-Wl,-force_load,${ORT_STATIC_DIR}/lib/libonnxruntime_providers.a"
+    ${ORT_STATIC_DIR}/lib/libonnxruntime.a
+    "-framework Foundation")
+  set(HAVE_ORT TRUE)
+  set(ORT_STATIC TRUE)
+  message(STATUS "Using static ONNX Runtime at ${ORT_STATIC_DIR}")
+elseif(EXISTS ${ORT_DIR}/lib/libonnxruntime.dylib)
   add_library(onnxruntime SHARED IMPORTED)
   file(GLOB _ort_dylib ${ORT_DIR}/lib/libonnxruntime.*.dylib)
   list(GET _ort_dylib 0 _ort_real)
@@ -135,7 +154,8 @@ if(EXISTS ${ORT_DIR}/lib/libonnxruntime.dylib)
   set(HAVE_ORT TRUE)
   message(STATUS "Found ONNX Runtime at ${ORT_DIR}")
 else()
-  message(WARNING "ONNX Runtime not found; run scripts/fetch_onnxruntime.sh. Pipeline targets disabled.")
+  message(WARNING "ONNX Runtime not found; run scripts/build_onnxruntime_static.sh (static) "
+                  "or scripts/fetch_onnxruntime.sh (dylib). Pipeline targets disabled.")
   set(HAVE_ORT FALSE)
 endif()
 
@@ -350,7 +370,7 @@ if(HAVE_MLX)
                 ${PDFIUM_DIR}/lib/libpdfium.dylib $<TARGET_FILE_DIR:mlx-mineru>
         VERBATIM)
     endif()
-    if(HAVE_ORT)
+    if(HAVE_ORT AND NOT ORT_STATIC)
       add_custom_command(TARGET mlx-mineru POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${_ort_real} $<TARGET_FILE_DIR:mlx-mineru>

@@ -38,7 +38,9 @@ done
 # pdfium: build a trimmed, macOS-only static libpdfium.a from source (no dylib at runtime).
 # Falls back to the prebuilt dylib if the from-source build is unavailable.
 ./scripts/build_pdfium_static_src.sh || { echo "WARN: static pdfium build failed; falling back to the prebuilt dylib"; ./scripts/fetch_pdfium.sh || echo "WARN: pdfium fetch failed; PDF targets will be skipped"; }
-./scripts/fetch_onnxruntime.sh   || echo "WARN: ONNX Runtime fetch failed; pipeline backend will be skipped"
+# ONNX Runtime: build a CPU-only static lib from source (no dylib at runtime); fall back to
+# the prebuilt dylib if that fails.
+./scripts/build_onnxruntime_static.sh || { echo "WARN: static ONNX Runtime build failed; falling back to the prebuilt dylib"; ./scripts/fetch_onnxruntime.sh || echo "WARN: ONNX Runtime fetch failed; pipeline backend will be skipped"; }
 ./scripts/build_opencv_static.sh || echo "WARN: static OpenCV build failed; wired-table path uses reimplemented cv ops"
 ./scripts/build_mlx_static.sh    || echo "WARN: static MLX build failed (needs the Metal toolchain: xcodebuild -downloadComponent MetalToolchain); falling back to the dynamic pip mlx dylib"
 ./scripts/fetch_mlx.sh           || echo "WARN: dynamic MLX vendoring failed (only used if the static build is absent)"

@@ -48,20 +48,19 @@ All of these are **gitignored** and fetched by scripts (called automatically by
 
 ### 3a. Native libraries → `third_party/`
 
-The binary carries **no external/Homebrew dylib dependency** at runtime. MLX, OpenCV, **and
-pdfium** are linked **statically** (built from source). Only ONNX Runtime — which has no
-mac-arm64 static build — remains a dylib, bundled next to the executable and resolved via an
-`@loader_path` rpath. So `build/mlx-mineru` plus two colocated runtime files
-(`libonnxruntime.*.dylib`, `mlx.metallib`) is a self-contained, relocatable unit; `otool -L`
-shows only `/usr/lib` + `/System` frameworks + that one ONNX dylib.
+The binary has **zero non-system dylib dependencies** — MLX, OpenCV, pdfium, **and ONNX
+Runtime** are all linked **statically** (built from source). `otool -L build/mlx-mineru` shows
+only `/System` frameworks + base `/usr/lib`. The executable plus the **`mlx.metallib`** data
+file (and the auto-downloaded `mumodel/`) is everything needed — copy it to any Apple Silicon
+Mac and it runs, no installed libraries.
 
-| Library | How | Built/fetched by | Notes |
+| Library | How | Built by | Notes |
 |---|---|---|---|
 | **MLX** (`libmlx.a`, `libjaccl.a`) | static | `scripts/build_mlx_static.sh` | C++/Metal tensor runtime (from source, v0.31.2). Needs the Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`). |
 | `mlx.metallib` (150 MB) | colocated asset | (from the MLX build) | Metal GPU shaders — **not a dylib**; copied next to the executable, loaded at runtime. |
 | **OpenCV** (`libopencv_core.a`, `libopencv_imgproc.a`) | static | `scripts/build_opencv_static.sh` | core+imgproc only (from source, 4.13.0) for the wired-table cv ops. |
 | **pdfium** (`libpdfium.a`) | static | `scripts/build_pdfium_static_src.sh` | **Trimmed** macOS-only static build from pdfium source (no gn/depot_tools): no V8/XFA/Skia/printing/png/tiff; system `libz`; an ICU shim and a font-subsetter stub drop the ICU/harfbuzz deps. Recipe in `third_party/pdfium-cmake/`. |
-| **ONNX Runtime** (`libonnxruntime.*.dylib`) | bundled | `scripts/fetch_onnxruntime.sh` | Pipeline backend (no mac-arm64 static upstream). Copied next to the binary. |
+| **ONNX Runtime** (`libonnxruntime.a` + `libonnxruntime_providers.a`) | static | `scripts/build_onnxruntime_static.sh` | CPU-only static build from source (v1.26.0). Deps mirrored from `cmake/deps.txt`; the providers archive is linked `-force_load` so CPU kernels register. |
 
 The static source builds are a one-time cost (idempotent — subsequent builds skip them).
 Header-only deps (`nlohmann/json`, `CLI11`, `cpp-httplib`, `stb`) are committed under
