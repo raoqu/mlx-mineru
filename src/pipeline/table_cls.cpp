@@ -39,7 +39,8 @@ TableClassifier& TableClassifier::operator=(TableClassifier&&) noexcept = defaul
 TableClassifier TableClassifier::load(const std::string& onnx_path) {
   TableClassifier c;
   Impl& m = *c.impl_;
-  if (std::string mp = sibling_mnn(onnx_path); !mp.empty()) m.mnn = MnnRunner::load(mp);
+  if (std::string mp = sibling_mnn(onnx_path); !mp.empty())
+    m.mnn = MnnRunner::load(mp, {"x"}, {"fetch_name_0"});
   if (!m.mnn) {  // no .mnn (or it failed to load) -> ONNX Runtime
     m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
     Ort::AllocatorWithDefaultOptions alloc;
@@ -71,10 +72,11 @@ TableClsResult TableClassifier::classify(const std::vector<uint8_t>& rgb, int w,
 
   std::array<float, 2> prob;
   if (m.mnn) {
-    std::vector<int> osh;
-    std::vector<float> out = m.mnn->run(input.data(), {1, 3, ch, cw}, osh);
-    if (out.size() < 2) throw std::runtime_error("table_cls: MNN inference failed");
-    prob = {out[0], out[1]};
+    std::vector<std::vector<float>> outs;
+    std::vector<std::vector<int>> oshs;
+    if (!m.mnn->run(input.data(), {1, 3, ch, cw}, outs, oshs) || outs.empty() || outs[0].size() < 2)
+      throw std::runtime_error("table_cls: MNN inference failed");
+    prob = {outs[0][0], outs[0][1]};
   } else {
     std::array<int64_t, 4> ishape{1, 3, ch, cw};
     Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);

@@ -43,7 +43,7 @@ WiredTableRecognizer WiredTableRecognizer::load(const std::string& onnx) {
   if (onnx.size() > 5 && onnx.substr(onnx.size() - 5) == ".onnx") {
     std::string mp = onnx.substr(0, onnx.size() - 5) + ".mnn";
     std::error_code ec;
-    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp);
+    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp, {"input"}, {"output"});
   }
   if (!m.mnn) {
     m.session = std::make_unique<Ort::Session>(m.env, onnx.c_str(), m.opts);
@@ -242,9 +242,12 @@ std::vector<uint8_t> WiredTableRecognizer::segment(const std::vector<uint8_t>& r
   return {};
 #endif
   if (m.mnn) {
-    std::vector<int> osh;
-    std::vector<float> seg = m.mnn->run(input.data(), {1, 3, nh, nw}, osh);  // int labels -> float
-    if (seg.empty() || osh.size() < 2) return {};
+    std::vector<std::vector<float>> outs;
+    std::vector<std::vector<int>> oshs;  // int labels -> float
+    if (!m.mnn->run(input.data(), {1, 3, nh, nw}, outs, oshs) || outs.empty() || oshs[0].size() < 2)
+      return {};
+    const std::vector<float>& seg = outs[0];
+    const std::vector<int>& osh = oshs[0];
     int oh = osh[osh.size() - 2], ow = osh[osh.size() - 1];
     std::vector<uint8_t> out((size_t)oh * ow);
     for (size_t i = 0; i < out.size() && i < seg.size(); ++i) out[i] = (uint8_t)(seg[i] + 0.5f);

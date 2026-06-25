@@ -2,12 +2,15 @@
 #include "mineru/ocr_rec.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 
 #include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
+#include "mnn_runner.hpp"        // hybrid MNN path (faster; parity-verified)
 #include "onnxruntime_cxx_api.h"
 
 namespace mineru {
@@ -19,7 +22,8 @@ struct TextRecognizer::Impl {
   std::vector<std::string> character;  // [0]="blank", 1..N-2=dict, [N-1]=" "
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-rec"};
   Ort::SessionOptions opts;
-  std::unique_ptr<Ort::Session> session;
+  std::unique_ptr<Ort::Session> session;  // ORT path (fallback)
+  std::unique_ptr<MnnRunner> mnn;         // MNN path (preferred when a .mnn sibling exists)
   std::string in_name, out_name;
 };
 
@@ -41,10 +45,17 @@ TextRecognizer TextRecognizer::load(const std::string& onnx_path, const std::str
     m.character.push_back(line);
   }
   m.character.push_back(" ");  // use_space_char
-  m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
-  Ort::AllocatorWithDefaultOptions alloc;
-  m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
-  m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  if (onnx_path.size() > 5 && onnx_path.substr(onnx_path.size() - 5) == ".onnx") {
+    std::string mp = onnx_path.substr(0, onnx_path.size() - 5) + ".mnn";
+    std::error_code ec;
+    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp, {"x"}, {"y"});
+  }
+  if (!m.mnn) {
+    m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
+    Ort::AllocatorWithDefaultOptions alloc;
+    m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
+    m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  }
   return r;
 }
 
@@ -69,16 +80,32 @@ RecResult TextRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int 
         input[(static_cast<size_t>(c) * kH + y) * imgW + x] =
             resized[(static_cast<size_t>(y) * rw + x) * 3 + (2 - c)] / 127.5f - 1.0f;
 
-  std::array<int64_t, 4> ishape{1, 3, kH, imgW};
-  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
-  const char* in_names[] = {m.in_name.c_str()};
-  const char* out_names[] = {m.out_name.c_str()};
-  auto outs =
-      const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 1);
-  const float* logits = outs[0].GetTensorData<float>();
-  auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
-  int T = static_cast<int>(oshape[1]), C = static_cast<int>(oshape[2]);
+  std::vector<float> logits_buf;
+  int T, C;
+  if (m.mnn) {
+    std::vector<std::vector<float>> mouts;
+    std::vector<std::vector<int>> moshs;
+    if (!m.mnn->run(input.data(), {1, 3, kH, imgW}, mouts, moshs) || mouts.empty() ||
+        moshs[0].size() < 3)
+      throw std::runtime_error("ocr_rec: MNN inference failed");
+    T = moshs[0][1];
+    C = moshs[0][2];
+    logits_buf = std::move(mouts[0]);
+  } else {
+    std::array<int64_t, 4> ishape{1, 3, kH, imgW};
+    Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
+    const char* in_names[] = {m.in_name.c_str()};
+    const char* out_names[] = {m.out_name.c_str()};
+    auto outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
+                                                          out_names, 1);
+    const float* p = outs[0].GetTensorData<float>();
+    auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
+    T = static_cast<int>(oshape[1]);
+    C = static_cast<int>(oshape[2]);
+    logits_buf.assign(p, p + static_cast<size_t>(T) * C);
+  }
+  const float* logits = logits_buf.data();
 
   // CTC greedy decode: argmax per step, drop blank(0), collapse repeats.
   RecResult res;

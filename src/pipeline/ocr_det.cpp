@@ -4,10 +4,13 @@
 #include "mineru/ocr_det.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <filesystem>
 #include <vector>
 
 #include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
+#include "mnn_runner.hpp"        // hybrid MNN path (faster; parity-verified)
 #include "onnxruntime_cxx_api.h"
 #ifdef MINERU_HAVE_OPENCV
 #include <opencv2/imgproc.hpp>
@@ -121,7 +124,8 @@ std::vector<DetBox> db_postprocess(const std::vector<float>& pred, int H, int W,
 struct TextDetector::Impl {
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-det"};
   Ort::SessionOptions opts;
-  std::unique_ptr<Ort::Session> session;
+  std::unique_ptr<Ort::Session> session;  // ORT path (fallback)
+  std::unique_ptr<MnnRunner> mnn;         // MNN path (preferred when a .mnn sibling exists)
   std::string in_name, out_name;
 };
 
@@ -133,10 +137,20 @@ TextDetector& TextDetector::operator=(TextDetector&&) noexcept = default;
 TextDetector TextDetector::load(const std::string& onnx_path) {
   TextDetector d;
   Impl& m = *d.impl_;
-  m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
-  Ort::AllocatorWithDefaultOptions alloc;
-  m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
-  m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  // The `.mnn` here is a *trimmed* DBNet (cut at the head's Sigmoid, dropping the unsupported
+  // NaN/Inf-sanitize subgraph — verified identical: y == Sigmoid output). So its single output
+  // is the probability map the DB post-process consumes.
+  if (onnx_path.size() > 5 && onnx_path.substr(onnx_path.size() - 5) == ".onnx") {
+    std::string mp = onnx_path.substr(0, onnx_path.size() - 5) + ".mnn";
+    std::error_code ec;
+    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp, {"x"}, {"/head/Sigmoid_output_0"});
+  }
+  if (!m.mnn) {
+    m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
+    Ort::AllocatorWithDefaultOptions alloc;
+    m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
+    m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  }
   return d;
 }
 
@@ -168,17 +182,32 @@ std::vector<DetBox> TextDetector::detect(const std::vector<uint8_t>& rgb, int w,
             (resized[(static_cast<size_t>(y) * rw + x) * 3 + (2 - c)] / 255.0f - kMean[c]) /
             kStd[c];
 
-  std::array<int64_t, 4> ishape{1, 3, rh, rw};
-  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
-  const char* in_names[] = {m.in_name.c_str()};
-  const char* out_names[] = {m.out_name.c_str()};
-  auto outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
-                                                        out_names, 1);
-  auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
-  int Hd = (int)oshape[2], Wd = (int)oshape[3];
-  const float* p = outs[0].GetTensorData<float>();
-  std::vector<float> prob(p, p + static_cast<size_t>(Hd) * Wd);
+  int Hd, Wd;
+  std::vector<float> prob;
+  if (m.mnn) {
+    std::vector<std::vector<float>> mouts;
+    std::vector<std::vector<int>> moshs;
+    if (!m.mnn->run(input.data(), {1, 3, rh, rw}, mouts, moshs) || mouts.empty() ||
+        moshs[0].size() < 4)
+      throw std::runtime_error("ocr_det: MNN inference failed");
+    Hd = moshs[0][2];
+    Wd = moshs[0][3];
+    prob = std::move(mouts[0]);
+    prob.resize(static_cast<size_t>(Hd) * Wd);
+  } else {
+    std::array<int64_t, 4> ishape{1, 3, rh, rw};
+    Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);
+    const char* in_names[] = {m.in_name.c_str()};
+    const char* out_names[] = {m.out_name.c_str()};
+    auto outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
+                                                          out_names, 1);
+    auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
+    Hd = (int)oshape[2];
+    Wd = (int)oshape[3];
+    const float* p = outs[0].GetTensorData<float>();
+    prob.assign(p, p + static_cast<size_t>(Hd) * Wd);
+  }
 
   std::array<double, 4> shape{(double)h, (double)w, (double)rh / h, (double)rw / w};
   return db_postprocess(prob, Hd, Wd, shape);

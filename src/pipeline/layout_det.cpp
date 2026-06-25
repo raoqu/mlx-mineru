@@ -8,7 +8,11 @@
 #include <sstream>
 #include <stdexcept>
 
+#include <array>
+#include <filesystem>
+
 #include "mineru/image_preprocess.hpp"  // resize_bicubic_rgb8
+#include "mnn_runner.hpp"               // hybrid MNN path (faster; parity-verified)
 #include "nlohmann/json.hpp"
 #include "onnxruntime_cxx_api.h"
 
@@ -29,7 +33,8 @@ struct LayoutDetector::Impl {
   std::vector<std::string> id2label;  // index = class id
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-layout"};
   Ort::SessionOptions opts;
-  std::unique_ptr<Ort::Session> session;
+  std::unique_ptr<Ort::Session> session;  // ORT path (fallback)
+  std::unique_ptr<MnnRunner> mnn;         // MNN path (preferred when a .mnn sibling exists)
 };
 
 LayoutDetector::LayoutDetector() : impl_(std::make_unique<Impl>()) {}
@@ -51,8 +56,14 @@ LayoutDetector LayoutDetector::load(const std::string& model_dir, float conf) {
                 "number",        "paragraph_title", "reference",  "reference_content",
                 "seal",          "table",        "text",          "vertical_text",
                 "vision_footnote"};
-  m.opts.SetIntraOpNumThreads(0);  // ORT default
-  m.session = std::make_unique<Ort::Session>(m.env, (model_dir + "/layout.onnx").c_str(), m.opts);
+  std::string mp = model_dir + "/layout.mnn";
+  std::error_code ec;
+  if (std::filesystem::exists(mp, ec))
+    m.mnn = MnnRunner::load(mp, {"pixel_values"}, {"logits", "pred_boxes", "order_logits"});
+  if (!m.mnn) {
+    m.opts.SetIntraOpNumThreads(0);  // ORT default
+    m.session = std::make_unique<Ort::Session>(m.env, (model_dir + "/layout.onnx").c_str(), m.opts);
+  }
   return d;
 }
 
@@ -67,19 +78,39 @@ std::vector<LayoutBox> LayoutDetector::detect_800(const std::vector<uint8_t>& rg
         input[(static_cast<size_t>(c) * kSize + y) * kSize + x] =
             rgb[(static_cast<size_t>(y) * kSize + x) * 3 + c] / 255.0f;
 
-  std::array<int64_t, 4> ishape{1, 3, kSize, kSize};
-  Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), ishape.data(), 4);
-  const char* in_names[] = {"pixel_values"};
-  const char* out_names[] = {"logits", "pred_boxes", "order_logits"};
-  auto outs =
-      const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 3);
-
-  const float* logits = outs[0].GetTensorData<float>();      // (1,300,ncl)
-  const float* boxes = outs[1].GetTensorData<float>();       // (1,300,4) cx,cy,w,h
-  const float* order_logits = outs[2].GetTensorData<float>();  // (1,Q,Q)
-  auto lshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
-  int nq = static_cast<int>(lshape[1]), ncl = static_cast<int>(lshape[2]);
+  std::vector<float> logits_buf, boxes_buf, order_buf;
+  int nq, ncl;
+  if (m.mnn) {
+    std::vector<std::vector<float>> mo;
+    std::vector<std::vector<int>> ms;
+    if (!m.mnn->run(input.data(), {1, 3, kSize, kSize}, mo, ms) || mo.size() < 3 || ms[0].size() < 3)
+      throw std::runtime_error("layout: MNN inference failed");
+    nq = ms[0][1];
+    ncl = ms[0][2];
+    logits_buf = std::move(mo[0]);
+    boxes_buf = std::move(mo[1]);
+    order_buf = std::move(mo[2]);
+  } else {
+    std::array<int64_t, 4> ishape{1, 3, kSize, kSize};
+    Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), ishape.data(), 4);
+    const char* in_names[] = {"pixel_values"};
+    const char* out_names[] = {"logits", "pred_boxes", "order_logits"};
+    auto outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
+                                                          out_names, 3);
+    auto lshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
+    nq = static_cast<int>(lshape[1]);
+    ncl = static_cast<int>(lshape[2]);
+    const float* lp = outs[0].GetTensorData<float>();
+    const float* bp = outs[1].GetTensorData<float>();
+    const float* op = outs[2].GetTensorData<float>();
+    logits_buf.assign(lp, lp + static_cast<size_t>(nq) * ncl);
+    boxes_buf.assign(bp, bp + static_cast<size_t>(nq) * 4);
+    order_buf.assign(op, op + static_cast<size_t>(nq) * nq);
+  }
+  const float* logits = logits_buf.data();        // (1,300,ncl)
+  const float* boxes = boxes_buf.data();          // (1,300,4) cx,cy,w,h
+  const float* order_logits = order_buf.data();   // (1,Q,Q)
 
   // Reading-order head decode (_get_order_seqs): per-query vote = sum_{i<q} sig(ol[i,q]) +
   // sum_{a>q} (1 - sig(ol[q,a])); argsort(votes) -> pointers; seq[pointer]=rank.

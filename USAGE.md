@@ -67,13 +67,25 @@ Header-only deps (`nlohmann/json`, `CLI11`, `cpp-httplib`, `stb`) are committed 
 `third_party/` and need no fetch.
 
 **Optional — hybrid MNN pipeline acceleration.** `./build.sh --mnn` builds a static
-[MNN](https://github.com/alibaba/MNN) (`scripts/build_mnn_static.sh`) and converts the two
-pipeline models MNN runs faster with **exact parity** — table-cls (PP-LCNet, ~2× faster) and
-wired-table UNet (~1.15×) — to `.mnn` (`scripts/convert_pipeline_mnn.sh`, needs `pip install
-MNN`). At runtime each model uses its `.mnn` if one sits next to the `.onnx`, else falls back
-to ONNX Runtime. The other CV models stay on ORT — MNN can't run them (op-coverage gaps:
-det/rec/layout/slanet). MNN links the system Apple GPU frameworks only, so the binary stays
-free of non-system dylibs. Default builds (no `--mnn`) are ORT-only and unchanged.
+[MNN](https://github.com/alibaba/MNN) 3.6.0 (`scripts/build_mnn_static.sh`) and converts the
+pipeline models MNN runs faster than ONNX Runtime (`scripts/convert_pipeline_mnn.sh`, needs
+`pip install MNN`) to `.mnn`. At runtime each model uses its `.mnn` if one sits next to the
+`.onnx`, else falls back to ONNX Runtime. **5 of the 8** CV models are accelerated, all
+**golden-verified** (identical output on real data):
+
+| model | speedup (CPU) | note |
+|---|---|---|
+| table-cls (PP-LCNet) | ~2× | exact |
+| layout (RT-DETR) | ~1.6× | logits/boxes/reading-order golden match |
+| ocr-det (DBNet) | ~1.35× | ONNX head cut at Sigmoid (drops the NaN/Inf-sanitize subgraph MNN can't convert; verified `y == Sigmoid`) |
+| ocr-rec (SVTR) | ~1.15× | CTC text golden match |
+| wired-table UNet | ~1.15× | exact |
+
+`slanet` (table structure) stays on ORT — a real MNN `Concat` shape bug, present even in
+3.6.0; `mfr` (formula) stays on ORT — negligible speedup. The hybrid runs MNN's **CPU**
+backend via its **Module/Express API** (handles `If` control flow + dynamic shapes; the legacy
+Session API and MNN 3.0.0 could not). MNN links the system Apple GPU frameworks only, so the
+binary stays free of non-system dylibs. Default builds (no `--mnn`) are ORT-only and unchanged.
 
 ### 3b. Model files → `mumodel/` (auto-discovered, auto-downloaded)
 

@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-VER="${MNN_VERSION:-3.0.0}"
+VER="${MNN_VERSION:-3.6.0}"  # 3.0.0 had SiLU/If runtime bugs; 3.6.0 runs layout + ocr_rec
 SRC="$ROOT/third_party/.mnn-src"
 BLD="$SRC/build_static"
 DEST="$ROOT/third_party/mnn-static"
