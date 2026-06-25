@@ -6,6 +6,7 @@
 // simplified; see AGENT.md.)
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -578,6 +579,20 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
   return pdf_info;
 }
 
+// Directory containing the running executable (empty if it can't be determined).
+static std::filesystem::path executable_dir() {
+  namespace fs = std::filesystem;
+#ifdef __APPLE__
+  char buf[4096];
+  uint32_t sz = sizeof(buf);
+  if (_NSGetExecutablePath(buf, &sz) == 0) {
+    std::error_code ec;
+    return fs::weakly_canonical(fs::path(buf), ec).parent_path();
+  }
+#endif
+  return {};
+}
+
 // Locate a model directory by name (e.g. "mumodel"), searching the working directory and the
 // executable's directory (plus its parents). Lets models resolve whether the app is launched
 // from the source tree, an install dir, or an unrelated working directory. Returns the bare
@@ -586,19 +601,81 @@ static std::string find_model_root(const std::string& name) {
   namespace fs = std::filesystem;
   std::error_code ec;
   std::vector<fs::path> cands = {fs::path(name)};  // ./<name> relative to the working directory
-#ifdef __APPLE__
-  char buf[4096];
-  uint32_t sz = sizeof(buf);
-  if (_NSGetExecutablePath(buf, &sz) == 0) {
-    fs::path d = fs::weakly_canonical(fs::path(buf), ec).parent_path();
+  if (fs::path d = executable_dir(); !d.empty()) {
     cands.push_back(d / name);                            // next to the executable
     cands.push_back(d.parent_path() / name);              // <exe>/../<name>  (e.g. build/ -> repo)
     cands.push_back(d.parent_path().parent_path() / name);
   }
-#endif
   for (const fs::path& c : cands)
     if (fs::is_directory(c, ec)) return c.lexically_normal().string();
   return name;
+}
+
+// Published mumodel runtime bundle: the VLM safetensors + pipeline ONNX the engine
+// actually loads. Distributed as a single repo cloned next to the app, mirroring the
+// index-tts2-metal method (git clone <repo> <dir>). Hugging Face is primary;
+// ModelScope is the mainland fallback.
+static constexpr const char* kMumodelHF = "https://huggingface.co/raoqu/mlx-mu";
+static constexpr const char* kMumodelMS = "https://modelscope.cn/models/iwannaido/mlx-mu";
+
+// True if <root> looks like a populated mumodel bundle rather than an empty dir or a
+// tree of unresolved Git-LFS pointer stubs: the ~2.2GB VLM weights are present and large.
+static bool mumodel_is_complete(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::path w = root / "MinerU2.5-tokenizer" / "model.safetensors";
+  return fs::exists(w, ec) && fs::file_size(w, ec) > (10ull << 20);
+}
+
+static bool run_cmd(const std::string& cmd) {
+  std::cerr << "[mlx-mineru] $ " << cmd << "\n";
+  return std::system(cmd.c_str()) == 0;
+}
+
+// git clone <url> into <dest>, pulling LFS objects so the large weights actually land
+// (the smudge filter runs automatically when git-lfs is installed; we also pull
+// explicitly as a belt-and-braces step). Returns true only if the bundle is complete.
+static bool clone_bundle(const std::string& url, const std::filesystem::path& dest) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  fs::remove_all(dest, ec);  // clear any partial/failed prior attempt
+  fs::create_directories(dest.parent_path(), ec);
+  const std::string q = "\"" + dest.string() + "\"";
+  if (!run_cmd("git clone " + std::string(url) + " " + q)) return false;
+  if (!mumodel_is_complete(dest)) run_cmd("git -C " + q + " lfs pull");
+  return mumodel_is_complete(dest);
+}
+
+// Resolve the mumodel bundle, auto-downloading it next to the executable (the "application
+// location", falling back to the working directory) when it is not already present.
+// Returns the bundle root, or an empty string if the download could not be completed.
+static std::string ensure_mumodel() {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  std::string found = find_model_root("mumodel");
+  if (fs::is_directory(found, ec) && mumodel_is_complete(found)) return found;
+
+  fs::path exe = executable_dir();
+  fs::path dest = (exe.empty() ? fs::path("mumodel") : exe / "mumodel");
+  std::cerr << "[mlx-mineru] model bundle 'mumodel' not found; downloading (~3.2GB, one-time)\n"
+            << "[mlx-mineru]   target: " << dest.string() << "\n"
+            << "[mlx-mineru]   requires git + git-lfs (brew install git-lfs)\n";
+
+  if (clone_bundle(kMumodelHF, dest)) {
+    std::cerr << "[mlx-mineru] model bundle ready (Hugging Face)\n";
+    return dest.lexically_normal().string();
+  }
+  std::cerr << "[mlx-mineru] Hugging Face download failed; trying ModelScope ...\n";
+  if (clone_bundle(kMumodelMS, dest)) {
+    std::cerr << "[mlx-mineru] model bundle ready (ModelScope)\n";
+    return dest.lexically_normal().string();
+  }
+
+  std::cerr << "[mlx-mineru] automatic download failed. Fetch the bundle manually:\n"
+            << "    git clone " << kMumodelHF << " mumodel\n"
+            << "  or (ModelScope)\n"
+            << "    git clone " << kMumodelMS << " mumodel\n";
+  return {};
 }
 
 // Read an input file as PDF bytes. Image inputs (png/jpeg/bmp/gif/...) are wrapped into a
@@ -879,11 +956,11 @@ int main(int argc, char** argv) {
   int start_page = 0, end_page = -1, port = 8000, bits = 4, batch_size = 6, pipeline_dpi = 200;
   bool layout_only = false, server = false, no_image_rec = false, web = false;
   app.add_option("-b,--backend", backend, "Backend: vlm (default) | pipeline (native ONNX CV)");
-  app.add_option("--pipeline-models", pipeline_models,
+  auto* pipeline_opt = app.add_option("--pipeline-models", pipeline_models,
                  "Pipeline backend model dir (default <mumodel>/pipeline, auto-discovered)");
   app.add_option("--pipeline-dpi", pipeline_dpi, "Pipeline render DPI (default 200)");
   app.add_option("-p,--path", pdf_path, "Input PDF path (not needed with --server)");
-  app.add_option("-m,--model", model_dir,
+  auto* model_opt = app.add_option("-m,--model", model_dir,
                  "VLM model dir (default <mumodel>/MinerU2.5-tokenizer, auto-discovered)");
   app.add_option("-s,--start", start_page, "First 0-based page (default 0)");
   app.add_option("-e,--end", end_page, "Last 0-based page inclusive (default: last)");
@@ -897,6 +974,16 @@ int main(int argc, char** argv) {
   app.add_option("--bits", bits, "Weight quantization bits: 4 (default) / 8 / 0 (full bf16)");
   app.add_option("--batch", batch_size, "Block generation batch size (default 6; 1 = sequential)");
   CLI11_PARSE(app, argc, argv);
+
+  // When the user hasn't pointed at their own models, make sure the mumodel bundle is
+  // present — auto-downloading it next to the executable on first run — and rebind the
+  // default paths to wherever it landed.
+  if (model_opt->count() == 0 && pipeline_opt->count() == 0) {
+    std::string root = ensure_mumodel();
+    if (root.empty()) return 1;  // download failed; ensure_mumodel already printed guidance
+    model_dir = root + "/MinerU2.5-tokenizer";
+    pipeline_models = root + "/pipeline";
+  }
 
   // Web / API server: per-request backend selection (vlm | pipeline | hybrid-engine),
   // lazy-loaded — no --backend binding needed.

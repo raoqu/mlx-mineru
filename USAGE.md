@@ -48,20 +48,51 @@ All of these are **gitignored** and fetched by scripts (called automatically by
 
 ### 3a. Native libraries → `third_party/`
 
-| File | Size | Fetched by | Notes |
+The binary carries **no external/Homebrew dylib dependency** at runtime. MLX, OpenCV, **and
+pdfium** are linked **statically** (built from source). Only ONNX Runtime — which has no
+mac-arm64 static build — remains a dylib, bundled next to the executable and resolved via an
+`@loader_path` rpath. So `build/mlx-mineru` plus two colocated runtime files
+(`libonnxruntime.*.dylib`, `mlx.metallib`) is a self-contained, relocatable unit; `otool -L`
+shows only `/usr/lib` + `/System` frameworks + that one ONNX dylib.
+
+| Library | How | Built/fetched by | Notes |
 |---|---|---|---|
-| `third_party/pdfium/lib/libpdfium.dylib` | 7.4 MB | `scripts/fetch_pdfium.sh` | PDF rasterization (bblanchon prebuilt) |
-| `third_party/mlx/lib/libmlx.dylib` | 21 MB | `scripts/fetch_mlx.sh` | MLX C++ tensor runtime |
-| `third_party/mlx/lib/libjaccl.dylib` | 0.9 MB | `scripts/fetch_mlx.sh` | MLX private dependency |
-| `third_party/mlx/lib/mlx.metallib` | 150 MB | `scripts/fetch_mlx.sh` | Metal GPU shaders (loaded next to libmlx) |
-| `third_party/mlx/include/` | — | `scripts/fetch_mlx.sh` | MLX headers (build only) |
+| **MLX** (`libmlx.a`, `libjaccl.a`) | static | `scripts/build_mlx_static.sh` | C++/Metal tensor runtime (from source, v0.31.2). Needs the Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`). |
+| `mlx.metallib` (150 MB) | colocated asset | (from the MLX build) | Metal GPU shaders — **not a dylib**; copied next to the executable, loaded at runtime. |
+| **OpenCV** (`libopencv_core.a`, `libopencv_imgproc.a`) | static | `scripts/build_opencv_static.sh` | core+imgproc only (from source, 4.13.0) for the wired-table cv ops. |
+| **pdfium** (`libpdfium.a`) | static | `scripts/build_pdfium_static_src.sh` | **Trimmed** macOS-only static build from pdfium source (no gn/depot_tools): no V8/XFA/Skia/printing/png/tiff; system `libz`; an ICU shim and a font-subsetter stub drop the ICU/harfbuzz deps. Recipe in `third_party/pdfium-cmake/`. |
+| **ONNX Runtime** (`libonnxruntime.*.dylib`) | bundled | `scripts/fetch_onnxruntime.sh` | Pipeline backend (no mac-arm64 static upstream). Copied next to the binary. |
 
-Header-only deps (`nlohmann/json`, `CLI11`, `cpp-httplib`, `stb`) are committed
-under `third_party/` and need no fetch.
+The static source builds are a one-time cost (idempotent — subsequent builds skip them).
+Header-only deps (`nlohmann/json`, `CLI11`, `cpp-httplib`, `stb`) are committed under
+`third_party/` and need no fetch.
 
-### 3b. Model files → `models/MinerU2.5-tokenizer/` (default `--model` dir)
+### 3b. Model files → `mumodel/` (auto-discovered, auto-downloaded)
 
-Model: **`opendatalab/MinerU2.5-Pro-2605-1.2B`** (Qwen2-VL, ~1.2 B params).
+The runtime loads everything from a single **`mumodel/`** bundle (VLM safetensors +
+pipeline ONNX, ~3.2 GB), published at
+[`raoqu/mlx-mu`](https://huggingface.co/raoqu/mlx-mu) (Hugging Face) and
+[`iwannaido/mlx-mu`](https://modelscope.cn/models/iwannaido/mlx-mu) (ModelScope).
+It is auto-discovered relative to the working dir or the executable, so no `--model`
+flag is needed when it sits next to the binary or at the repo root.
+
+**First run downloads it automatically** to the executable's directory (Hugging Face
+first, ModelScope as fallback) — no manual step required. To pre-fetch (CI / offline),
+or to control the destination:
+
+```bash
+./scripts/fetch_mumodel.sh          # -> ./mumodel  (HF, ModelScope fallback)
+./scripts/fetch_mumodel.sh /path    # -> /path
+./build.sh --mumodel                # pre-fetch as part of a build
+# or directly, mirroring the published model card:
+git clone https://huggingface.co/raoqu/mlx-mu mumodel
+```
+
+> Auto-download requires `git` + `git-lfs` (`brew install git-lfs`). Pass an explicit
+> `--model` **and** `--pipeline-models` to opt out of auto-download and use your own dirs.
+
+The VLM weights are **`opendatalab/MinerU2.5-Pro-2605-1.2B`** (Qwen2-VL, ~1.2 B params).
+The legacy per-file fetch (into `models/MinerU2.5-tokenizer/`) still works:
 
 ```bash
 ./scripts/fetch_weights.sh      # weights + tokenizer + configs (~2.2 GB, resumable)

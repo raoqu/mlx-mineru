@@ -7,6 +7,7 @@
 #   ./build.sh --debug         # Debug build
 #   ./build.sh --test          # build, then run ctest
 #   ./build.sh --weights       # also fetch the ~2.2GB model weights first
+#   ./build.sh --mumodel       # also pre-fetch the ~3.2GB mumodel runtime bundle
 #   ./build.sh --clean         # remove build/ first (fresh configure)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -15,24 +16,38 @@ BUILD_DIR="${BUILD_DIR:-build}"
 BUILD_TYPE="Release"
 RUN_TESTS=0
 FETCH_WEIGHTS=0
+FETCH_MUMODEL=0
 
 for arg in "$@"; do
   case "$arg" in
     --debug)   BUILD_TYPE="Debug" ;;
     --test)    RUN_TESTS=1 ;;
     --weights) FETCH_WEIGHTS=1 ;;
+    --mumodel) FETCH_MUMODEL=1 ;;
     --clean)   rm -rf "$BUILD_DIR" ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
 
-# --- dependencies (gitignored; fetched on demand) ---
-./scripts/fetch_pdfium.sh    || echo "WARN: pdfium fetch failed; PDF targets will be skipped"
-./scripts/fetch_mlx.sh       || echo "WARN: MLX vendoring failed; build will fall back to the pip mlx path"
-./scripts/fetch_tokenizer.sh || echo "WARN: tokenizer fetch failed; tokenizer test will fail"
+# --- dependencies (gitignored; fetched/built on demand) ---
+# pdfium + ONNX Runtime have no upstream static build, so they are bundled as dylibs next
+# to the binary (relocatable via @loader_path); MLX and OpenCV are built static from source
+# so the binary carries no libmlx/libjaccl/opencv dylib. All steps are idempotent (skip if
+# already present), so only the first build pays the one-time source-build cost.
+# pdfium: build a trimmed, macOS-only static libpdfium.a from source (no dylib at runtime).
+# Falls back to the prebuilt dylib if the from-source build is unavailable.
+./scripts/build_pdfium_static_src.sh || { echo "WARN: static pdfium build failed; falling back to the prebuilt dylib"; ./scripts/fetch_pdfium.sh || echo "WARN: pdfium fetch failed; PDF targets will be skipped"; }
+./scripts/fetch_onnxruntime.sh   || echo "WARN: ONNX Runtime fetch failed; pipeline backend will be skipped"
+./scripts/build_opencv_static.sh || echo "WARN: static OpenCV build failed; wired-table path uses reimplemented cv ops"
+./scripts/build_mlx_static.sh    || echo "WARN: static MLX build failed (needs the Metal toolchain: xcodebuild -downloadComponent MetalToolchain); falling back to the dynamic pip mlx dylib"
+./scripts/fetch_mlx.sh           || echo "WARN: dynamic MLX vendoring failed (only used if the static build is absent)"
+./scripts/fetch_tokenizer.sh     || echo "WARN: tokenizer fetch failed; tokenizer test will fail"
 if [ "$FETCH_WEIGHTS" = "1" ]; then
   ./scripts/fetch_weights.sh
+fi
+if [ "$FETCH_MUMODEL" = "1" ]; then
+  ./scripts/fetch_mumodel.sh
 fi
 
 # --- web UI: build the frontend (pnpm + vite) and embed it into the binary ---

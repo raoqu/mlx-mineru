@@ -18,11 +18,26 @@ working principles.
 ./clean.sh             # remove build/ and output/   (--deps / --all for more)
 ```
 
-Requires CMake ≥ 3.20, a C++20 compiler (Apple clang), and the pip `mlx` package
-(provides the MLX C++ library). Header-only deps (`nlohmann/json`, `CLI11`,
-`cpp-httplib`, `stb`) are vendored under `third_party/`; the pdfium binary, tokenizer,
-and model weights are fetched on demand (gitignored). `./scripts/build_and_test.sh`
-is the equivalent one-shot build+test entry point.
+Requires CMake ≥ 3.20, a C++20 compiler (Apple clang), and the Metal toolchain
+(`xcodebuild -downloadComponent MetalToolchain`) for the from-source MLX build.
+Header-only deps (`nlohmann/json`, `CLI11`, `cpp-httplib`, `stb`) are vendored under
+`third_party/`; the tokenizer and model weights are fetched on demand (gitignored).
+`./scripts/build_and_test.sh` is the equivalent one-shot build+test entry point.
+
+**Self-contained binary (no external dylib dependency).** MLX, OpenCV, and pdfium are linked
+**statically** (built from source by `build.sh`; pdfium is a trimmed macOS-only build from
+source — no gn/depot_tools — see `third_party/pdfium-cmake/`). Only ONNX Runtime — which has
+no mac-arm64 static build — is **bundled** next to the executable and resolved via an
+`@loader_path` rpath. So `build/mlx-mineru` + its two colocated runtime files
+(`libonnxruntime.*.dylib`, `mlx.metallib`) is a relocatable unit that depends only on system
+frameworks — no Homebrew/`/opt` or build-tree paths. The static source builds are a one-time
+cost (idempotent on rebuild).
+
+The runtime model bundle (`mumodel/`, ~3.2GB) is **auto-downloaded on first run** to the
+executable's directory from [Hugging Face](https://huggingface.co/raoqu/mlx-mu) (with
+[ModelScope](https://modelscope.cn/models/iwannaido/mlx-mu) fallback) — no flags needed
+(`git` + `git-lfs` required). Pre-fetch with `./build.sh --mumodel` or
+`./scripts/fetch_mumodel.sh`.
 
 ## CLI — PDF → Markdown
 

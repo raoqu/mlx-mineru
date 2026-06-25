@@ -20,20 +20,65 @@ target_include_directories(thirdparty_headers INTERFACE
   ${CMAKE_SOURCE_DIR}/third_party        # nlohmann/json.hpp, CLI11/CLI11.hpp
 )
 
-# ---- pdfium (prebuilt; fetch via scripts/fetch_pdfium.sh) --------------------
+# ---- pdfium ------------------------------------------------------------------
+# Preferred: a trimmed, macOS-only *static* libpdfium.a built from source
+# (scripts/build_pdfium_static_src.sh) so the binary carries no libpdfium.dylib at runtime.
+# Fallback: the bblanchon prebuilt dylib (scripts/fetch_pdfium.sh).
+set(PDFIUM_STATIC_DIR ${CMAKE_SOURCE_DIR}/third_party/pdfium-static)
 set(PDFIUM_DIR ${CMAKE_SOURCE_DIR}/third_party/pdfium)
-if(EXISTS ${PDFIUM_DIR}/lib/libpdfium.dylib)
+set(PDFIUM_STATIC FALSE)
+if(EXISTS ${PDFIUM_STATIC_DIR}/lib/libpdfium.a)
+  add_library(pdfium STATIC IMPORTED)
+  set_target_properties(pdfium PROPERTIES
+    IMPORTED_LOCATION ${PDFIUM_STATIC_DIR}/lib/libpdfium.a
+    INTERFACE_INCLUDE_DIRECTORIES ${PDFIUM_STATIC_DIR}/include)
+  # pdfium's macOS backend (CoreGraphics/CoreText quartz) + flate via system zlib.
+  target_link_libraries(pdfium INTERFACE
+    "-framework CoreGraphics" "-framework CoreFoundation" "-framework CoreText"
+    "-framework AppKit" z)
+  set(HAVE_PDFIUM TRUE)
+  set(PDFIUM_STATIC TRUE)
+  message(STATUS "Using static pdfium at ${PDFIUM_STATIC_DIR}")
+elseif(EXISTS ${PDFIUM_DIR}/lib/libpdfium.dylib)
   add_library(pdfium SHARED IMPORTED)
   set_target_properties(pdfium PROPERTIES
     IMPORTED_LOCATION ${PDFIUM_DIR}/lib/libpdfium.dylib
     INTERFACE_INCLUDE_DIRECTORIES ${PDFIUM_DIR}/include)
   set(HAVE_PDFIUM TRUE)
 else()
-  message(WARNING "pdfium not found at ${PDFIUM_DIR}; run scripts/fetch_pdfium.sh. PDF targets disabled.")
+  message(WARNING "pdfium not found; run scripts/build_pdfium_static_src.sh (static) "
+                  "or scripts/fetch_pdfium.sh (dylib). PDF targets disabled.")
   set(HAVE_PDFIUM FALSE)
 endif()
 
-# ---- MLX (C++ library bundled in the pip `mlx` package) ----------------------
+# ---- MLX (C++/Metal) ---------------------------------------------------------
+# Preferred: a from-source *static* MLX (scripts/build_mlx_static.sh) so libmlx links
+# statically and the binary carries no libmlx.dylib / libjaccl.dylib at runtime. The
+# Metal shader archive (mlx.metallib) is a data asset, not a dylib — it is copied next to
+# the executable (see the CLI target) and loaded at runtime.
+set(MLX_STATIC_DIR ${CMAKE_SOURCE_DIR}/third_party/mlx-static)
+set(MLX_STATIC FALSE)
+if(EXISTS ${MLX_STATIC_DIR}/lib/libmlx.a)
+  # Pin MLX_DIR to the static install: find_package reuses a cached MLX_DIR (e.g. a pip
+  # path from an earlier configure) and would otherwise ignore PATHS, silently linking the
+  # dynamic libmlx.dylib instead of libmlx.a.
+  set(MLX_DIR ${MLX_STATIC_DIR}/share/cmake/MLX CACHE PATH "" FORCE)
+  # MLX's static export references jaccl::jaccl but ships no jacclConfig.cmake, so
+  # find_package(MLX) can't resolve it. Include the targets file directly to define it.
+  if(EXISTS ${MLX_STATIC_DIR}/lib/cmake/jaccl/jacclTargets.cmake)
+    include(${MLX_STATIC_DIR}/lib/cmake/jaccl/jacclTargets.cmake)
+  endif()
+  find_package(MLX CONFIG PATHS ${MLX_STATIC_DIR}/share/cmake/MLX NO_DEFAULT_PATH QUIET)
+  if(MLX_FOUND)
+    set(HAVE_MLX TRUE)
+    set(MLX_STATIC TRUE)
+    set(MLX_LIB_DIR ${MLX_STATIC_DIR}/lib)   # holds mlx.metallib (runtime asset)
+    message(STATUS "Using static MLX at ${MLX_STATIC_DIR}")
+  endif()
+endif()
+
+# Fallback: the dynamic MLX from the pip `mlx` package (vendored dylib via fetch_mlx.sh).
+if(NOT MLX_FOUND)
 execute_process(
   COMMAND python3 -c "import mlx.core,os;print(os.path.dirname(mlx.core.__file__))"
   OUTPUT_VARIABLE MLX_ROOT OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE MLX_RC)
@@ -69,6 +114,14 @@ else()
   message(WARNING "MLX not found (pip `mlx`); MLX targets disabled.")
   set(HAVE_MLX FALSE)
 endif()
+endif()  # NOT MLX_FOUND (static-MLX fallback to dynamic pip MLX)
+
+# With MLX linked statically there is no libmlx.dylib to sit beside; the Metal backend
+# instead loads mlx.metallib from next to the *executable* (via dladdr on the binary).
+# Colocate it in the build dir at configure time so every MLX binary (CLI + tests) finds it.
+if(HAVE_MLX AND MLX_STATIC AND EXISTS ${MLX_LIB_DIR}/mlx.metallib)
+  file(COPY ${MLX_LIB_DIR}/mlx.metallib DESTINATION ${CMAKE_BINARY_DIR})
+endif()
 
 # ---- ONNX Runtime (C++; pipeline backend) -----------------------------------
 set(ORT_DIR ${CMAKE_SOURCE_DIR}/third_party/onnxruntime)
@@ -86,21 +139,24 @@ else()
   set(HAVE_ORT FALSE)
 endif()
 
-# ---- OpenCV (optional; bit-exact cv2 ops for the wired-table UNet path) ------
-# Used so the wired-table postprocess uses the SAME OpenCV as MinerU (cv2 4.13.0)
-# instead of reimplemented primitives. Resolved via Homebrew if present.
-foreach(_ocv_hint /opt/homebrew/opt/opencv /usr/local/opt/opencv)
-  if(EXISTS ${_ocv_hint}/lib/cmake/opencv4)
-    list(APPEND CMAKE_PREFIX_PATH ${_ocv_hint})
-  endif()
-endforeach()
-find_package(OpenCV QUIET COMPONENTS core imgproc)
+# ---- OpenCV (static; bit-exact cv2 ops for the wired-table UNet path) ---------
+# Built static from source (4.13.0) via scripts/build_opencv_static.sh into
+# third_party/opencv/ so the binary links core+imgproc as static archives and carries
+# NO opencv dylib at runtime (no Homebrew dependency). If the static build is absent,
+# OpenCV is simply disabled and the wired-table path falls back to reimplemented cv ops
+# — we deliberately do NOT fall back to a Homebrew dylib, to keep the binary self-contained.
+set(OPENCV_STATIC_DIR ${CMAKE_SOURCE_DIR}/third_party/opencv)
+if(EXISTS ${OPENCV_STATIC_DIR}/lib/libopencv_core.a)
+  set(OpenCV_DIR ${OPENCV_STATIC_DIR}/lib/cmake/opencv4)
+  find_package(OpenCV QUIET COMPONENTS core imgproc NO_DEFAULT_PATH PATHS ${OpenCV_DIR})
+endif()
 if(OpenCV_FOUND)
   set(HAVE_OPENCV TRUE)
-  message(STATUS "Found OpenCV ${OpenCV_VERSION} at ${OpenCV_INSTALL_PATH}")
+  message(STATUS "Found static OpenCV ${OpenCV_VERSION} at ${OPENCV_STATIC_DIR}")
 else()
   set(HAVE_OPENCV FALSE)
-  message(STATUS "OpenCV not found; wired-table UNet path uses reimplemented cv ops")
+  message(STATUS "static OpenCV not built (scripts/build_opencv_static.sh); "
+                 "wired-table UNet path uses reimplemented cv ops")
 endif()
 
 # ---- Core library ------------------------------------------------------------
@@ -273,7 +329,9 @@ if(HAVE_MLX)
     execute_process(COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/embed_web.py)
     add_executable(mlx-mineru src/cli/main.cpp src/cli/web_assets.gen.cpp)
     target_link_libraries(mlx-mineru PRIVATE mineru_qwen mineru_vlm mineru_pdf mineru_core)
-    set(MLX_MINERU_RPATH "${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
+    # @loader_path first so a relocated bundle (binary + colocated dylibs) is
+    # self-contained; the absolute third_party dirs follow for in-tree dev runs.
+    set(MLX_MINERU_RPATH "@loader_path;${MLX_LIB_DIR};${PDFIUM_DIR}/lib")
     if(HAVE_ORT)
       # Add the native pipeline backend (--backend pipeline) to the CLI.
       target_link_libraries(mlx-mineru PRIVATE mineru_pipeline)
@@ -281,6 +339,23 @@ if(HAVE_MLX)
       set(MLX_MINERU_RPATH "${MLX_MINERU_RPATH};${ORT_DIR}/lib")
     endif()
     set_target_properties(mlx-mineru PROPERTIES BUILD_RPATH "${MLX_MINERU_RPATH}")
+
+    # Bundle the remaining runtime dylibs (those with no static build) next to the executable
+    # so the binary runs with no external/build-tree dependency — copy + the @loader_path rpath
+    # above make `build/mlx-mineru` + its colocated dylibs relocatable. pdfium is linked
+    # statically when available, so it is only copied in the dylib-fallback case.
+    if(NOT PDFIUM_STATIC)
+      add_custom_command(TARGET mlx-mineru POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${PDFIUM_DIR}/lib/libpdfium.dylib $<TARGET_FILE_DIR:mlx-mineru>
+        VERBATIM)
+    endif()
+    if(HAVE_ORT)
+      add_custom_command(TARGET mlx-mineru POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_ort_real} $<TARGET_FILE_DIR:mlx-mineru>
+        VERBATIM)
+    endif()
   endif()
 
   set(MODEL_ST ${CMAKE_SOURCE_DIR}/mumodel/MinerU2.5-tokenizer/model.safetensors)
