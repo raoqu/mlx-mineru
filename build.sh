@@ -48,6 +48,9 @@ done
 ./scripts/build_mlx_static.sh    || echo "WARN: static MLX build failed (needs the Metal toolchain: xcodebuild -downloadComponent MetalToolchain); falling back to the dynamic pip mlx dylib"
 ./scripts/fetch_mlx.sh           || echo "WARN: dynamic MLX vendoring failed (only used if the static build is absent)"
 ./scripts/fetch_tokenizer.sh     || echo "WARN: tokenizer fetch failed; tokenizer test will fail"
+# MNN (CPU static) — REQUIRED by the pipeline backend: 5 of its 8 models ship as `.mnn` only
+# (their .onnx is archived in orgmodel), so they run on MNN. Idempotent (one-time build).
+./scripts/build_mnn_static.sh    || echo "WARN: static MNN build failed; the MNN-only pipeline models (layout/ocr_det/ocr_rec/table_cls/unet) will not load — regenerate their .onnx with scripts/convert_pipeline_mnn.sh, or restore from orgmodel"
 if [ "$FETCH_WEIGHTS" = "1" ]; then
   ./scripts/fetch_weights.sh
 fi
@@ -57,8 +60,9 @@ fi
 # Optional hybrid MNN acceleration: build static MNN (so the binary links it) and convert the
 # two exact-parity pipeline models. The binary uses the .mnn models when present, else ORT.
 if [ "$BUILD_MNN" = "1" ]; then
-  ./scripts/build_mnn_static.sh    || echo "WARN: static MNN build failed; pipeline stays on ONNX Runtime"
-  ./scripts/convert_pipeline_mnn.sh || echo "WARN: MNN model conversion skipped (models not present yet?)"
+  # --mnn: (re)generate the pipeline `.mnn` from the source `.onnx` (in orgmodel, or mumodel if
+  # still present). Only needed when updating models — the published mumodel already ships them.
+  ./scripts/convert_pipeline_mnn.sh || echo "WARN: MNN model conversion skipped (source .onnx not present?)"
 fi
 
 # --- web UI: build the frontend (pnpm + vite) and embed it into the binary ---
