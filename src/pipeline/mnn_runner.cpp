@@ -1,9 +1,11 @@
 // Copyright (c) mlx-mineru.
 #include "mnn_runner.hpp"
 
+#include <cstdlib>
 #include <cstring>
 
 #ifdef MINERU_HAVE_MNN
+#include <MNN/MNNForwardType.h>
 #include <MNN/expr/Executor.hpp>
 #include <MNN/expr/ExprCreator.hpp>
 #include <MNN/expr/Module.hpp>
@@ -14,43 +16,56 @@ namespace mineru {
 #ifdef MINERU_HAVE_MNN
 using namespace MNN::Express;
 
-struct MnnRunner::Impl {
-  std::shared_ptr<Executor::RuntimeManager> rtmgr;
-  std::shared_ptr<Module> net;
-  std::vector<std::string> in_names;
-};
+namespace {
+// Backend selected by MINERU_MNN_BACKEND (cpu|metal|coreml|auto), default metal.
+//   metal  — MNN_FORWARD_METAL (default), GPU; large speedups on the heavier CV models
+//            (unet/ocr_rec/ocr_det) on Apple Silicon at fp32 (Precision_High) with golden-
+//            verified parity. Big win across multi-hundred-page PDFs where CV cost compounds.
+//   cpu    — MNN_FORWARD_CPU, fp32, the verified-parity baseline.
+//   coreml — MNN_FORWARD_NN (ANE/GPU); MNN's CoreML codegen currently fails to compile these
+//            models (spec-version / unsupported-op), so it falls back to CPU in practice.
+//   auto   — same as metal (try Metal, fall back to CPU).
+// Any non-CPU backend that fails to load OR fails at first inference transparently rebuilds the
+// module on CPU, so a backend op gap degrades gracefully instead of breaking the pipeline.
+MNNForwardType requested_backend() {
+  const char* e = std::getenv("MINERU_MNN_BACKEND");
+  if (!e || !*e) return MNN_FORWARD_METAL;  // default: GPU
+  std::string s(e);
+  if (s == "cpu") return MNN_FORWARD_CPU;
+  if (s == "coreml" || s == "nn") return MNN_FORWARD_NN;
+  return MNN_FORWARD_METAL;  // "metal", "auto", anything else
+}
 
-MnnRunner::MnnRunner() : impl_(std::make_unique<Impl>()) {}
-MnnRunner::~MnnRunner() = default;
-
-std::unique_ptr<MnnRunner> MnnRunner::load(const std::string& mnn_path,
-                                           const std::vector<std::string>& input_names,
-                                           const std::vector<std::string>& output_names) {
+std::shared_ptr<Module> load_on(MNNForwardType fwd, const std::string& mnn_path,
+                                const std::vector<std::string>& in,
+                                const std::vector<std::string>& out,
+                                std::shared_ptr<Executor::RuntimeManager>& rtmgr_out) {
   MNN::ScheduleConfig sc;
-  sc.type = MNN_FORWARD_CPU;  // CPU = verified-parity win; Metal/CoreML have op gaps.
+  sc.type = fwd;
   sc.numThread = 4;
+  MNN::BackendConfig bc;
+  // fp32 everywhere (Precision_High): on Metal this keeps near-exact parity with the CPU/ONNX
+  // baseline (max|Δ| ~1e-5..1e-4, golden-passing) while still giving large GPU speedups; the
+  // fp16 path (Precision_Normal) is only marginally faster but drifts enough to fail the strict
+  // table_cls golden, so it is not used.
+  bc.precision = MNN::BackendConfig::Precision_High;
+  bc.power = MNN::BackendConfig::Power_High;
+  sc.backendConfig = &bc;
   std::shared_ptr<Executor::RuntimeManager> rtmgr(
       Executor::RuntimeManager::createRuntimeManager(sc));
   if (!rtmgr) return nullptr;
   Module::Config mc;
   mc.shapeMutable = true;  // allow dynamic input H/W (ocr_rec width, unet, slanet)
   mc.rearrange = false;
-  std::shared_ptr<Module> net(
-      Module::load(input_names, output_names, mnn_path.c_str(), rtmgr, &mc));
+  std::shared_ptr<Module> net(Module::load(in, out, mnn_path.c_str(), rtmgr, &mc));
   if (!net) return nullptr;
-  std::unique_ptr<MnnRunner> r(new MnnRunner());
-  r->impl_->rtmgr = rtmgr;
-  r->impl_->net = net;
-  r->impl_->in_names = input_names;
-  return r;
+  rtmgr_out = rtmgr;
+  return net;
 }
 
-bool MnnRunner::run(const float* input, const std::array<int, 4>& nchw,
-                    std::vector<std::vector<float>>& outs, std::vector<std::vector<int>>& out_shapes) {
-  VARP x = _Input({nchw[0], nchw[1], nchw[2], nchw[3]}, NCHW, halide_type_of<float>());
-  std::memcpy(x->writeMap<float>(), input,
-              static_cast<size_t>(nchw[0]) * nchw[1] * nchw[2] * nchw[3] * sizeof(float));
-  std::vector<VARP> result = impl_->net->onForward({x});
+// Copy MNN outputs into flattened float buffers (int label outputs normalized to float).
+bool read_outputs(const std::vector<VARP>& result, std::vector<std::vector<float>>& outs,
+                  std::vector<std::vector<int>>& out_shapes) {
   if (result.empty()) return false;
   outs.assign(result.size(), {});
   out_shapes.assign(result.size(), {});
@@ -62,7 +77,6 @@ bool MnnRunner::run(const float* input, const std::array<int, 4>& nchw,
     out_shapes[i].assign(info->dim.begin(), info->dim.end());
     const int n = info->size;
     outs[i].resize(n);
-    // Normalize int label outputs (e.g. UNet) to float; float outputs pass through.
     if (info->type.code == halide_type_float) {
       const float* p = v->readMap<float>();
       if (!p) return false;
@@ -80,6 +94,70 @@ bool MnnRunner::run(const float* input, const std::array<int, 4>& nchw,
     }
   }
   return true;
+}
+
+}  // namespace
+
+struct MnnRunner::Impl {
+  std::shared_ptr<Executor::RuntimeManager> rtmgr;
+  std::shared_ptr<Module> net;
+  std::vector<std::string> in_names;
+  std::vector<std::string> out_names;
+  std::string path;
+  MNNForwardType backend = MNN_FORWARD_CPU;
+  bool fell_back = false;  // already rebuilt on CPU after a non-CPU failure?
+};
+
+MnnRunner::MnnRunner() : impl_(std::make_unique<Impl>()) {}
+MnnRunner::~MnnRunner() = default;
+
+std::unique_ptr<MnnRunner> MnnRunner::load(const std::string& mnn_path,
+                                           const std::vector<std::string>& input_names,
+                                           const std::vector<std::string>& output_names) {
+  MNNForwardType fwd = requested_backend();
+  std::shared_ptr<Executor::RuntimeManager> rtmgr;
+  std::shared_ptr<Module> net = load_on(fwd, mnn_path, input_names, output_names, rtmgr);
+  if (!net && fwd != MNN_FORWARD_CPU) {  // backend unavailable/load failed -> CPU fallback
+    fwd = MNN_FORWARD_CPU;
+    net = load_on(fwd, mnn_path, input_names, output_names, rtmgr);
+  }
+  if (!net) return nullptr;
+  std::unique_ptr<MnnRunner> r(new MnnRunner());
+  r->impl_->rtmgr = rtmgr;
+  r->impl_->net = net;
+  r->impl_->in_names = input_names;
+  r->impl_->out_names = output_names;
+  r->impl_->path = mnn_path;
+  r->impl_->backend = fwd;
+  r->impl_->fell_back = (fwd == MNN_FORWARD_CPU);
+  return r;
+}
+
+bool MnnRunner::run(const float* input, const std::array<int, 4>& nchw,
+                    std::vector<std::vector<float>>& outs, std::vector<std::vector<int>>& out_shapes) {
+  VARP x = _Input({nchw[0], nchw[1], nchw[2], nchw[3]}, NCHW, halide_type_of<float>());
+  std::memcpy(x->writeMap<float>(), input,
+              static_cast<size_t>(nchw[0]) * nchw[1] * nchw[2] * nchw[3] * sizeof(float));
+  std::vector<VARP> result = impl_->net->onForward({x});
+  if ((result.empty() || !result[0].get()) && !impl_->fell_back &&
+      impl_->backend != MNN_FORWARD_CPU) {
+    // The chosen GPU/ANE backend could not execute this model (e.g. CoreML op gap surfaces only
+    // at first forward) — rebuild on CPU once and retry, so the model still runs.
+    std::shared_ptr<Executor::RuntimeManager> rtmgr;
+    std::shared_ptr<Module> net =
+        load_on(MNN_FORWARD_CPU, impl_->path, impl_->in_names, impl_->out_names, rtmgr);
+    if (net) {
+      impl_->rtmgr = rtmgr;
+      impl_->net = net;
+      impl_->backend = MNN_FORWARD_CPU;
+      impl_->fell_back = true;
+      VARP x2 = _Input({nchw[0], nchw[1], nchw[2], nchw[3]}, NCHW, halide_type_of<float>());
+      std::memcpy(x2->writeMap<float>(), input,
+                  static_cast<size_t>(nchw[0]) * nchw[1] * nchw[2] * nchw[3] * sizeof(float));
+      result = impl_->net->onForward({x2});
+    }
+  }
+  return read_outputs(result, outs, out_shapes);
 }
 
 #else  // !MINERU_HAVE_MNN — stub so the pipeline builds without MNN (always falls back to ORT).

@@ -169,21 +169,29 @@ else()
 endif()
 
 # ---- MNN (static; pipeline acceleration) ------------------------------------
-# Built static via scripts/build_mnn_static.sh (MNN 3.6.0, CPU-only). 5 of the 8 pipeline
-# models run faster on MNN with golden-verified parity (layout, ocr_det, ocr_rec, table_cls,
-# unet); for these mumodel ships only the `.mnn` (the `.onnx` is archived in orgmodel), so the
-# binary REQUIRES MNN to run them. The other 3 (slanet, mfr_encoder, mfr_decoder) stay on ORT.
-# Each wrapper uses a `<model>.mnn` if present, else the `.onnx` via ORT. CPU-only libMNN.a
-# needs just a few base system frameworks (no Metal toolchain).
+# Built static via scripts/build_mnn_static.sh (MNN 3.6.0, CPU + Metal + CoreML). 4 pipeline
+# models run faster on MNN with golden-verified parity (ocr_det, ocr_rec, table_cls, unet); for
+# these mumodel ships only the `.mnn` (the `.onnx` is archived in orgmodel), so the binary
+# REQUIRES MNN to run them. The other models (layout, slanet, mfr_*) stay on ORT. Each wrapper
+# uses a `<model>.mnn` if present, else the `.onnx` via ORT.
+#
+# The backend is chosen at runtime via MINERU_MNN_BACKEND (cpu|metal|coreml|auto), default cpu
+# (see src/pipeline/mnn_runner.cpp). Metal gives large GPU speedups on Apple Silicon (unet ~18x,
+# ocr_rec ~8x, ocr_det ~2.4x; CoreML currently falls back to CPU). The Metal & CoreML backends
+# are compiled into libMNN.a, so the final binary must link the Apple GPU/ANE frameworks below;
+# Metal shaders are embedded as source (compiled at runtime), so no external mnn.metallib is
+# needed and the binary stays relocatable/dylib-free.
 set(MNN_STATIC_DIR ${CMAKE_SOURCE_DIR}/third_party/mnn-static)
 if(EXISTS ${MNN_STATIC_DIR}/lib/libMNN.a)
   add_library(mnn INTERFACE)
   target_include_directories(mnn INTERFACE ${MNN_STATIC_DIR}/include)
   target_link_libraries(mnn INTERFACE
     ${MNN_STATIC_DIR}/lib/libMNN.a
-    "-framework Foundation" "-framework CoreFoundation" "-framework Accelerate")
+    "-framework Foundation" "-framework CoreFoundation" "-framework Accelerate"
+    "-framework Metal" "-framework CoreGraphics"          # MNN Metal backend (GPU)
+    "-framework CoreML" "-framework CoreVideo")            # MNN CoreML backend (ANE/GPU)
   set(HAVE_MNN TRUE)
-  message(STATUS "Using static MNN at ${MNN_STATIC_DIR} (CPU; pipeline accel)")
+  message(STATUS "Using static MNN at ${MNN_STATIC_DIR} (CPU/Metal/CoreML; pipeline accel)")
 else()
   set(HAVE_MNN FALSE)
 endif()

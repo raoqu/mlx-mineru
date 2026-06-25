@@ -22,7 +22,13 @@ if [ ! -d "$SRC/.git" ]; then
     || git clone --depth 1 https://github.com/alibaba/MNN.git "$SRC"
 fi
 
-echo "[mnn] configuring static build (CPU + Metal + ARM82) ..."
+echo "[mnn] configuring static build (CPU + Metal + CoreML + ARM82) ..."
+# Metal (GPU) and CoreML (ANE/GPU) backends are built in alongside CPU so the runner can pick a
+# backend at load time (MINERU_MNN_BACKEND=cpu|metal|coreml|auto) and fall back to CPU on op gaps.
+# Metal shaders are embedded as source (AllShader.cpp, compiled at runtime via
+# newLibraryWithSource) — no external mnn.metallib, so the binary stays relocatable/dylib-free.
+# Both backends add object files into the single libMNN.a (MNN_SEP_BUILD=OFF); the final binary
+# must additionally link the Apple frameworks (see CMakeLists.txt MNN_FRAMEWORKS).
 rm -rf "$BLD"
 cmake -S "$SRC" -B "$BLD" -G "Unix Makefiles" \
   -DCMAKE_BUILD_TYPE=Release \
@@ -33,7 +39,8 @@ cmake -S "$SRC" -B "$BLD" -G "Unix Makefiles" \
   -DMNN_BUILD_TOOLS=OFF \
   -DMNN_BUILD_BENCHMARK=OFF \
   -DMNN_BUILD_TEST=OFF \
-  -DMNN_METAL=OFF \
+  -DMNN_METAL=ON \
+  -DMNN_COREML=ON \
   -DMNN_ARM82=ON \
   -DMNN_USE_THREAD_POOL=ON
 
