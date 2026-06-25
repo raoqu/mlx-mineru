@@ -35,10 +35,24 @@
 | union_make | pipeline_middle_json_mkcontent | `mkcontent.cpp`（VLM 版 union_make，签名带 formula/table_enable） | 🟡 见 §4 |
 | 选项 formula/table_enable, lang, is_ocr | batch 内 gating / env | 🔧 `ConvertOpts` 全部接通（withhold 识别器 / union_make flag / 强制 OCR） | ✅ |
 
-**未实现（已记录）**：
-- ⬜ `cross_page_table_merge`（跨页表格合并）— finalize_middle_json 步骤。
-- ⬜ `apply_title_leveling`（标题分级）— 当前 paragraph_title 一律 level 2。
+**finalize_middle_json_from_preproc（文档级后处理）**：
+- ✅ 🔧 `cross_page_table_merge`（跨页表格合并）— 本轮移植，见下。
+- ✅ `apply_title_leveling`（标题分级）— 已对齐：确定性路径就是 `_post_block_process` 的
+  doc_title→level 1 / paragraph_title→level 2（本项目 `pipeline_assemble.cpp` 一致）；MinerU 的
+  LLM-aided 重新分级是可选外部能力（默认关闭），不属于确定性管线，故不移植。
 - 🟡 magic_model 的复杂 span 关联用「贪心重叠匹配」近似（a.pdf/demo 验证下与 MinerU 一致）。
+
+**🔧 本轮：跨页表格合并（对齐 `mineru/utils/table_merge.py`）**
+- 反向遍历页：若第 N 页首块与第 N-1 页末块均为 table，构建轻量 HTML 表模型（tr/td/th +
+  colspan/rowspan，逐字节序列化），按占用矩阵算有效列/总列，结构+视觉双重表头检测，
+  caption/footnote/宽度/列匹配门控，跳过重复表头后逐行拼接，footnote 带 `cross_page`+重排
+  index 搬到上页，被并走的表 `lines=[]`+`lines_deleted=true`。
+- 验证：`tests/golden/table_merge_golden.json`（由 MinerU 真 `merge_table` 生成，10 例覆盖
+  表头重复/无表头/续表 caption/footnote/列宽不匹配/rowspan 表头/三页链式）→ C++ 端 `table_merge`
+  ctest **逐字节深度相等 10/10**。生成器 `scripts/gen_table_merge_golden.py`。
+- 未移植（已记录，pipeline 不触发）：`_apply_cell_merge`（VLM 专有 `cell_merge` 字段，pipeline
+  从不产生）；`_clip_overlapped_blank_rowspan_cells`/`_carry_rowspan_structure_to_next_row`
+  （仅当 rowspan 跨页延续时触发的空白占位裁剪）。
 
 **🔧 本轮：表格有无线分类路由（对齐 `batch_analyze` + `UnetTableModel.predict`）**
 - 所有表格先跑 SLANet+（无线）→ `wireless_html`。
@@ -105,9 +119,11 @@
 
 ## 待办（按优先级）
 
-1. ✅ ~~表格分类路由（SLANet+ vs UNet 由 TableClassifier 选）~~ —— 本轮完成（见 §1）。
-2. ⬜ `cross_page_table_merge` + `apply_title_leveling`（finalize_middle_json 两步）。
+1. ✅ ~~表格分类路由（SLANet+ vs UNet 由 TableClassifier 选）~~ —— 已完成（见 §1）。
+2. ✅ ~~`cross_page_table_merge` + `apply_title_leveling`~~ —— 本轮完成（合并已移植并 golden 验证；
+   标题分级确定性路径本已对齐，LLM 路径不适用）。
 3. ⬜ `_layout.pdf` / `_span.pdf`（移植 draw_bbox.py 的 PDF 注记绘制）。
 4. 🟡 pin MLX 版本到 `<=0.31.1`。
 5. 🟡 逐行核对 pipeline 版 union_make 与本项目 mkcontent 的差异。
 6. 🟡 pdfium 光栅化 flag 对齐（关闭最后一个 VLM 歧义字形残差）。
+7. 🟡 跨页 rowspan 空白裁剪 / VLM cell_merge（当前 pipeline 不触发，见 §1）。

@@ -1,0 +1,1693 @@
+[
+ {
+  "name": "A_header_repeat",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td><td>C</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td><td>C</td></tr><tr><td>4</td><td>5</td><td>6</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td><td>C</td></tr><tr><td>1</td><td>2</td><td>3</td></tr><tr><td>4</td><td>5</td><td>6</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "B_no_header",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "C_caption_plain",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_caption",
+        "bbox": [
+         10,
+         20,
+         300,
+         38
+        ],
+        "index": 7,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "Table 2: New"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_caption",
+        "bbox": [
+         10,
+         20,
+         300,
+         38
+        ],
+        "index": 7,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "Table 2: New"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "D_caption_continued",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_caption",
+        "bbox": [
+         10,
+         20,
+         300,
+         38
+        ],
+        "index": 7,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "Table 1 (续)"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_caption",
+        "bbox": [
+         10,
+         20,
+         300,
+         38
+        ],
+        "index": 7,
+        "lines": [],
+        "lines_deleted": true
+       },
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "E_footnote_page2",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_footnote",
+        "bbox": [
+         10,
+         110,
+         300,
+         128
+        ],
+        "index": 9,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "note"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_footnote",
+        "bbox": [
+         10,
+         110,
+         300,
+         128
+        ],
+        "index": 6,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "note"
+           }
+          ]
+         }
+        ],
+        "cross_page": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       },
+       {
+        "type": "table_footnote",
+        "bbox": [
+         10,
+         110,
+         300,
+         128
+        ],
+        "index": 9,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "F_col_mismatch",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>x</td><td>y</td><td>z</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>x</td><td>y</td><td>z</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "G_footnote_prev",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_footnote",
+        "bbox": [
+         10,
+         565,
+         300,
+         580
+        ],
+        "index": 6,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "pn"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "type": "table_footnote",
+        "bbox": [
+         10,
+         565,
+         300,
+         580
+        ],
+        "index": 6,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "text",
+            "content": "pn"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "H_width_mismatch",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       150,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         150,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       150,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         150,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "I_rowspan_header",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td rowspan=\"2\">H</td><td>B</td></tr><tr><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td rowspan=\"2\">H</td><td>B</td></tr><tr><td>b</td></tr><tr><td>9</td><td>8</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td rowspan=\"2\">H</td><td>B</td></tr><tr><td>b</td></tr><tr><td>1</td><td>2</td></tr><tr><td>9</td><td>8</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "name": "J_three_page",
+  "input": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>3</td><td>4</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>5</td><td>6</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "expected": [
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       500,
+       300,
+       560
+      ],
+      "index": 5,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         500,
+         300,
+         560
+        ],
+        "index": 5,
+        "lines": [
+         {
+          "spans": [
+           {
+            "type": "table",
+            "html": "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr><tr><td>3</td><td>4</td></tr><tr><td>5</td><td>6</td></tr></table>"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "para_blocks": [
+     {
+      "type": "table",
+      "bbox": [
+       10,
+       40,
+       300,
+       100
+      ],
+      "index": 8,
+      "blocks": [
+       {
+        "type": "table_body",
+        "bbox": [
+         10,
+         40,
+         300,
+         100
+        ],
+        "index": 8,
+        "lines": [],
+        "lines_deleted": true
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]

@@ -10,6 +10,7 @@
 
 #include "mineru/pipeline_assemble.hpp"
 #include "mineru/post_ocr.hpp"
+#include "mineru/table_merge.hpp"
 
 namespace mineru {
 
@@ -213,6 +214,10 @@ nlohmann::json pipeline_assemble_pages(const nlohmann::json& model_list,
     optimize_formula_numbers(page_info["para_blocks"]);
     pdf_info.push_back(std::move(page_info));
   }
+  // Document-level finalize: merge tables that continue across a page break (faithful to
+  // finalize_middle_json_from_preproc -> cross_page_table_merge). Title leveling stays a
+  // no-op without the optional LLM config, matching MinerU's deterministic path.
+  cross_page_table_merge(pdf_info);
   return pdf_info;
 }
 

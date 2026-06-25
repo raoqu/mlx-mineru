@@ -59,7 +59,8 @@
 | `para_split`：title/equation 分组、跨块段落合并 | ✅ | ❌ |
 | 标题分级：doc_title→L1 / paragraph_title→L2 | ✅ | ✅ |
 | 标题分级：LLM-aided 层级推断 | ✅（可选） | ❌ |
-| `optimize_formula_number_blocks` / `cross_page_table_merge` | ✅ | ❌ |
+| `optimize_formula_number_blocks` | ✅ | ✅ |
+| `cross_page_table_merge`（跨页表格合并） | ✅ | ✅（移植 table_merge.py，10/10 golden 逐字节一致；cell_merge/跨页 rowspan 裁剪 pipeline 不触发） |
 | discarded（页眉/页脚/页码/边注）分流 | ✅ | ✅（分流逻辑在；未端到端验证） |
 | 弃用低置信度/小宽度 OCR（OcrConfidence） | ✅ | 🟡 仅 drop_score 0.5 |
 

@@ -107,6 +107,7 @@ endif()
 add_library(mineru_core STATIC
   src/core/middle_json.cpp
   src/core/pipeline_assemble.cpp
+  src/core/table_merge.cpp
   src/output/text_utils.cpp
   src/output/mkcontent.cpp
   src/io/image_write.cpp
@@ -121,6 +122,13 @@ target_link_libraries(mineru_core PUBLIC thirdparty_headers)
 
 # ---- Tests -------------------------------------------------------------------
 enable_testing()
+
+if(EXISTS ${CMAKE_SOURCE_DIR}/tests/golden/table_merge_golden.json)
+  add_executable(test_table_merge tests/test_table_merge.cpp)
+  target_include_directories(test_table_merge PRIVATE ${CMAKE_SOURCE_DIR}/tests)
+  target_link_libraries(test_table_merge PRIVATE mineru_core)
+  add_test(NAME table_merge COMMAND test_table_merge ${CMAKE_SOURCE_DIR}/tests/golden)
+endif()
 
 add_executable(test_middle_json_roundtrip tests/test_middle_json_roundtrip.cpp)
 target_include_directories(test_middle_json_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/tests)
