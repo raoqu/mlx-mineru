@@ -59,6 +59,11 @@ TableRecognizer TableRecognizer::load(const std::string& onnx, const std::string
     if (m.character[i] == "sos") m.sos_idx = i;
     if (m.character[i] == "eos") m.eos_idx = i;
   }
+  // SLANet+ emits a benign shape-inference warning at load ("MergeShapeInfo ...
+  // '_generated_var_1' source:{1} target:{}. Falling back to lenient merge") — the model's
+  // own metadata quirk, harmless (output verified by the pipeline_table test). Quiet it so it
+  // doesn't clutter stderr; real errors (ERROR level) still surface.
+  m.opts.SetLogSeverityLevel(ORT_LOGGING_LEVEL_ERROR);
   m.session = std::make_unique<Ort::Session>(m.env, onnx.c_str(), m.opts);
   Ort::AllocatorWithDefaultOptions alloc;
   m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
