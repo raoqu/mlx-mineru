@@ -110,6 +110,9 @@ static std::string instruction_for(const std::string& type) {
 
 // RGB crop -> base64 JPEG data URI (defined below; used by process_page's "@inline" mode).
 static std::string jpg_data_uri(const std::vector<uint8_t>& rgb, int w, int h);
+// Crop an axis-aligned region (page-point bbox * scale) from an RGB page image (defined below).
+static std::vector<uint8_t> crop_region(const std::vector<uint8_t>& rgb, int W, int H,
+                                        const json& bbox, double scale, int& cw, int& ch);
 
 // One text line/span wrapper.
 static json text_lines(const std::string& content, const std::array<double, 4>& bb) {
@@ -517,8 +520,11 @@ static PipelineModels load_pipeline_models(const std::string& models) {
 
 // Convert pages [s..e] of a document to middle_json pdf_info using pre-loaded models.
 // If model_list_out is non-null it receives the raw model_list (for {name}_model.json).
+// If images_dir is non-empty, image/chart crops are written there as {hash}.jpg and the spans'
+// image_path set to that filename (faithful to MinerU cut_image_and_table).
 static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& doc, int dpi, int s,
-                                     int e, json* model_list_out = nullptr) {
+                                     int e, json* model_list_out = nullptr,
+                                     const std::string& images_dir = "") {
   json model_list = json::array();
   std::vector<mineru::PipelinePageImage> pages;
   for (int p = s; p <= e; ++p) {
@@ -537,6 +543,34 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
     pages.push_back(std::move(pg));
   }
   json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pm.rec);
+  // Cut image/chart crops to images/{hash}.jpg and reference them, like MinerU do_parse.
+  if (!images_dir.empty()) {
+    for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
+      double scale = pages[p].page_w > 0 ? (double)pages[p].w / pages[p].page_w : 1.0;
+      std::function<void(json&)> visit = [&](json& blk) {
+        if (blk.contains("lines"))
+          for (auto& ln : blk["lines"])
+            if (ln.contains("spans"))
+              for (auto& sp : ln["spans"]) {
+                std::string st = sp.value("type", "");
+                if ((st != "image" && st != "chart") || !sp.contains("bbox")) continue;
+                int cw, ch;
+                std::vector<uint8_t> crop =
+                    crop_region(pages[p].rgb, pages[p].w, pages[p].h, sp["bbox"], scale, cw, ch);
+                if (cw <= 0 || ch <= 0) continue;
+                std::string fname = mineru::content_hash_hex(crop) + ".jpg";
+                mineru::write_jpeg(images_dir + "/" + fname, crop, cw, ch);
+                sp["image_path"] = fname;
+              }
+        if (blk.contains("blocks"))
+          for (auto& sub : blk["blocks"]) visit(sub);
+      };
+      for (auto& blk : pdf_info[p]["para_blocks"]) {
+        std::string t = blk.value("type", "");
+        if (t == "image" || t == "chart") visit(blk);
+      }
+    }
+  }
   if (model_list_out) *model_list_out = std::move(model_list);
   return pdf_info;
 }
@@ -567,12 +601,12 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   PipelineModels pm = load_pipeline_models(models);
   std::cerr << "[mlx-mineru] pipeline models loaded in " << secs(t0, Clock::now()) << "s\n";
   auto t_inf = Clock::now();
-  json model_list;
-  json pdf_info = pipeline_doc_to_pdf_info(pm, doc, dpi, s, e, &model_list);
-
   std::string stem = fs::path(pdf_path).stem().string();
   fs::path dir = fs::path(out_dir) / stem / "pipeline";
-  fs::create_directories(dir);
+  fs::path images_dir = dir / "images";
+  fs::create_directories(images_dir);  // MinerU prepare_env always makes images/
+  json model_list;
+  json pdf_info = pipeline_doc_to_pdf_info(pm, doc, dpi, s, e, &model_list, images_dir.string());
   std::string md =
       mineru::union_make(pdf_info, mineru::make_mode::kMmMd, "images").get<std::string>();
   json content_list = mineru::union_make(pdf_info, mineru::make_mode::kContentList, "images");
