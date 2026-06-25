@@ -24,7 +24,7 @@
 | 输入 | MinerU | mlx-mineru |
 |---|---|---|
 | PDF | ✅ | ✅（pdfium，光栅化逐像素一致） |
-| 图片（png/jpg/webp/tiff…） | ✅ | ❌ |
+| 图片（png/jpg/bmp/gif…） | ✅ | ✅（image→单页 PDF→管线，对齐 read_fn→images_bytes_to_pdf_bytes；web 支持拖放/粘贴） |
 | Office（docx/pptx/xlsx） | ✅ | ❌ |
 
 ## 3. Pipeline 后端逐阶段
@@ -112,7 +112,7 @@
 3/19 框坐标差 ≤1px（不影响任何文字/HTML）；(b) vendored pdfium 与 pypdfium2 渲染/取码的
 亚像素差异，偶尔翻转一个高度歧义字形（script U）或给出 CJK 统一汉字而非兼容码位。
 6. **版面启发式过滤层** — 复杂/重叠版面的鲁棒性（框抑制、公式去重、重排）。
-7. **广度类（次优先）** — 多语言 OCR、图片输入、Office/hybrid 后端。
+7. **广度类（次优先）** — 多语言 OCR、Office 后端（图片输入与 hybrid 已接）。
 
 **验证建议**：尽快引入含表格/公式/图片/多栏的测试 PDF，建立对应 golden（沿用本会话
 "MinerU 真值 → C++ 逐级比对"的范式），把上面 2–6 的对齐做成可回归的 ctest。

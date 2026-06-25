@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { marked } from 'marked'
 import katex from 'katex'
 
@@ -45,7 +45,9 @@ onMounted(async () => {
       serverInfo.value = `${j.version || ''}`.trim()
     }
   } catch (_) { /* dev: backend may not be up yet */ }
+  window.addEventListener('paste', onPaste)
 })
+onUnmounted(() => window.removeEventListener('paste', onPaste))
 const backendHint = computed(() => ({
   'hybrid-engine': '原生流水线 + VLM 图表理解（混合）',
   'pipeline': '原生 ONNX 流水线（版面/OCR/公式/表格，最快）',
@@ -53,18 +55,40 @@ const backendHint = computed(() => ({
 }[backend.value] || '本地原生解析引擎'))
 
 const previewUrl = ref('')
+const previewType = ref('')   // 'pdf' | 'image' | ''
 function onPick(e) { setFile(e.target.files?.[0]) }
 function onDrop(e) { dragOver.value = false; setFile(e.dataTransfer.files?.[0]) }
 function setFile(f) {
   if (!f) return
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   file.value = f
-  fileName.value = f.name
-  previewUrl.value = /\.pdf$/i.test(f.name) ? URL.createObjectURL(f) : ''
+  fileName.value = f.name || 'pasted-image.png'
+  const name = f.name || ''
+  const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(name)
+  const isImg = (f.type && f.type.startsWith('image/')) || /\.(png|jpe?g|webp|bmp|gif|tiff?)$/i.test(name)
+  previewType.value = isPdf ? 'pdf' : (isImg ? 'image' : '')
+  previewUrl.value = (isPdf || isImg) ? URL.createObjectURL(f) : ''
+}
+// Paste an image straight from the clipboard (screenshot or copied picture).
+function onPaste(e) {
+  const items = e.clipboardData && e.clipboardData.items
+  if (!items) return
+  for (const it of items) {
+    if (it.type && it.type.startsWith('image/')) {
+      const blob = it.getAsFile()
+      if (blob) {
+        const ext = (it.type.split('/')[1] || 'png').replace('jpeg', 'jpg')
+        const named = new File([blob], blob.name || `pasted-${Date.now()}.${ext}`, { type: it.type })
+        setFile(named)
+        e.preventDefault()
+        return
+      }
+    }
+  }
 }
 function clearAll() {
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
-  file.value = null; fileName.value = ''; previewUrl.value = ''
+  file.value = null; fileName.value = ''; previewUrl.value = ''; previewType.value = ''
   md.value = ''; contentList.value = null; error.value = ''; resetSteps()
 }
 
@@ -148,9 +172,9 @@ function copy(text) { navigator.clipboard?.writeText(text) }
              @dragleave.prevent="dragOver = false" @drop.prevent="onDrop"
              @click="$refs.fi.click()">
           <div class="up-ico">⬆</div>
-          <div v-if="!fileName">将文件拖放到此处<br /><span class="muted">- 或 -</span><br />点击上传</div>
+          <div v-if="!fileName">将文件拖放到此处<br /><span class="muted">- 或 -</span><br />点击上传<br /><span class="muted small">也可直接粘贴图像（⌘/Ctrl+V）</span></div>
           <div v-else class="picked">{{ fileName }}</div>
-          <input ref="fi" type="file" hidden accept=".pdf,.png,.jpg,.jpeg,.docx,.pptx,.xlsx" @change="onPick" />
+          <input ref="fi" type="file" hidden accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tif,.tiff,.docx,.pptx,.xlsx" @change="onPick" />
         </div>
 
         <div class="field">
@@ -212,7 +236,8 @@ function copy(text) { navigator.clipboard?.writeText(text) }
       <section class="card preview">
         <div class="card-head">📄 doc preview</div>
         <div class="preview-body">
-          <embed v-if="previewUrl" :src="previewUrl" type="application/pdf" class="pdf" />
+          <embed v-if="previewType === 'pdf'" :src="previewUrl" type="application/pdf" class="pdf" />
+          <img v-else-if="previewType === 'image'" :src="previewUrl" class="img-preview" :alt="fileName" />
           <div v-else-if="fileName" class="ph-named">{{ fileName }}</div>
           <div v-else class="ph">📄</div>
         </div>

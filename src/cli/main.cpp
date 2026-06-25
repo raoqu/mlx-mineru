@@ -19,6 +19,7 @@
 #include "httplib/httplib.h"
 #include "mineru/enums.hpp"
 #include "mineru/image_preprocess.hpp"
+#include "mineru/image_to_pdf.hpp"
 #include "mineru/image_write.hpp"
 #include "mineru/mkcontent.hpp"
 #include "mineru/otsl.hpp"
@@ -422,9 +423,12 @@ static int run_web_server(const ConvertFn& convert, const std::vector<std::strin
     s = "false"; get("is_ocr", s); opt.is_ocr = truthy(s);
     get("lang", opt.lang);
     get("effort", opt.effort);
-    if (pdf.size() < 5 || pdf.compare(0, 5, "%PDF-") != 0) {
+    std::vector<uint8_t> bytes(pdf.begin(), pdf.end());
+    bool is_pdf = pdf.size() >= 5 && pdf.compare(0, 5, "%PDF-") == 0;
+    if (!is_pdf && !mineru::looks_like_image(bytes)) {
       res.status = 400;
-      res.set_content("{\"error\":\"expected a PDF body or multipart 'files'\"}", "application/json");
+      res.set_content("{\"error\":\"expected a PDF or image body / multipart 'files'\"}",
+                      "application/json");
       return;
     }
     if (std::find(backends.begin(), backends.end(), opt.backend) == backends.end()) {
@@ -434,7 +438,6 @@ static int run_web_server(const ConvertFn& convert, const std::vector<std::strin
     }
     try {
       std::lock_guard<std::mutex> lock(infer_mtx);
-      std::vector<uint8_t> bytes(pdf.begin(), pdf.end());
       json out = convert(bytes, opt);
       res.set_content(out.dump(), "application/json");
     } catch (const std::exception& ex) {
@@ -537,12 +540,23 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
   return pdf_info;
 }
 
+// Read an input file as PDF bytes. Image inputs (png/jpeg/bmp/gif/...) are wrapped into a
+// single-page PDF, faithful to MinerU read_fn -> images_bytes_to_pdf_bytes; PDFs pass through.
+static std::vector<uint8_t> read_input_as_pdf_bytes(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+  if (mineru::looks_like_image(bytes)) return mineru::image_bytes_to_pdf_bytes(bytes);
+  return bytes;
+}
+
 // Native pipeline backend (one-shot): render -> layout + OCR det -> model_list ->
 // assemble + text-fill -> union_make -> write files. No VLM model needed.
 static int run_pipeline(const std::string& pdf_path, const std::string& models,
                         const std::string& out_dir, int start_page, int end_page, int dpi) {
   namespace fs = std::filesystem;
-  mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);
+  std::vector<uint8_t> pdf_bytes = read_input_as_pdf_bytes(pdf_path);
+  mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(pdf_bytes);
   int npages = doc.page_count();
   int s = std::clamp(start_page, 0, npages - 1);
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
@@ -574,8 +588,9 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   write(stem + "_content_list_v2.json", content_list_v2.dump(4));
   write(stem + "_middle.json", middle.dump(4));
   write(stem + "_model.json", model_list.dump(4));
-  { std::ifstream in(pdf_path, std::ios::binary); std::ofstream(dir / (stem + "_origin.pdf"),
-      std::ios::binary) << in.rdbuf(); }
+  // _origin.pdf is the (possibly image-wrapped) PDF actually parsed, matching MinerU.
+  std::ofstream(dir / (stem + "_origin.pdf"), std::ios::binary)
+      .write(reinterpret_cast<const char*>(pdf_bytes.data()), pdf_bytes.size());
   std::cerr << "[mlx-mineru] pipeline inference " << secs(t_inf, Clock::now()) << "s; total "
             << secs(t0, Clock::now()) << "s\n";
   return 0;
@@ -667,7 +682,10 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
 #endif
 
   ConvertFn convert = [&](const std::vector<uint8_t>& bytes, const ConvertOpts& o) -> json {
-    mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(bytes);
+    // Image uploads (png/jpeg/...) are wrapped into a one-page PDF, like MinerU read_fn.
+    std::vector<uint8_t> pdf_bytes =
+        mineru::looks_like_image(bytes) ? mineru::image_bytes_to_pdf_bytes(bytes) : bytes;
+    mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(pdf_bytes);
     int np = doc.page_count();
     int e = (o.max_pages > 0) ? std::min(np, o.max_pages) - 1 : np - 1;
 #ifdef MINERU_HAVE_PIPELINE
@@ -787,7 +805,8 @@ int main(int argc, char** argv) {
             << std::chrono::duration<double>(t_loaded - t0).count() << "s\n";
 
   if (pdf_path.empty()) { std::cerr << "--path is required (or use --server)\n"; return 2; }
-  mineru::PdfDocument doc = mineru::PdfDocument::open_file(pdf_path);
+  std::vector<uint8_t> pdf_bytes = read_input_as_pdf_bytes(pdf_path);
+  mineru::PdfDocument doc = mineru::PdfDocument::open_bytes(pdf_bytes);
   int npages = doc.page_count();
   int s = std::clamp(start_page, 0, npages - 1);
   int e = (end_page < 0) ? npages - 1 : std::clamp(end_page, s, npages - 1);
@@ -853,8 +872,8 @@ int main(int argc, char** argv) {
     write(stem + "_content_list.json", content_list.dump(4));
     write(stem + "_content_list_v2.json", content_list_v2.dump(4));
     write(stem + "_middle.json", middle.dump(4));
-    { std::ifstream in(pdf_path, std::ios::binary); std::ofstream(dir / (stem + "_origin.pdf"),
-        std::ios::binary) << in.rdbuf(); }
+    std::ofstream(dir / (stem + "_origin.pdf"), std::ios::binary)
+        .write(reinterpret_cast<const char*>(pdf_bytes.data()), pdf_bytes.size());
     std::cerr << "[mlx-mineru] wrote " << (dir / (stem + "_origin.pdf")).string() << "\n";
   }
   g_prof.assembly += secs(_a0, Clock::now());
