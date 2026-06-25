@@ -5,8 +5,11 @@
 #include "mineru/wired_table.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <filesystem>
 
+#include "mnn_runner.hpp"  // hybrid MNN path (faster; exact parity)
 #include "onnxruntime_cxx_api.h"
 
 #ifdef MINERU_HAVE_OPENCV
@@ -23,7 +26,8 @@ const float kStd[3] = {58.395f, 57.12f, 57.375f};
 struct WiredTableRecognizer::Impl {
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-wired"};
   Ort::SessionOptions opts;
-  std::unique_ptr<Ort::Session> session;
+  std::unique_ptr<Ort::Session> session;  // ORT path (fallback)
+  std::unique_ptr<MnnRunner> mnn;         // MNN path (preferred when a .mnn sibling exists)
   std::string in_name, out_name;
 };
 
@@ -35,10 +39,18 @@ WiredTableRecognizer& WiredTableRecognizer::operator=(WiredTableRecognizer&&) no
 WiredTableRecognizer WiredTableRecognizer::load(const std::string& onnx) {
   WiredTableRecognizer r;
   Impl& m = *r.impl_;
-  m.session = std::make_unique<Ort::Session>(m.env, onnx.c_str(), m.opts);
-  Ort::AllocatorWithDefaultOptions alloc;
-  m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
-  m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  // Prefer a `<model>.mnn` sibling (UNet runs faster with exact parity under MNN); else ORT.
+  if (onnx.size() > 5 && onnx.substr(onnx.size() - 5) == ".onnx") {
+    std::string mp = onnx.substr(0, onnx.size() - 5) + ".mnn";
+    std::error_code ec;
+    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp);
+  }
+  if (!m.mnn) {
+    m.session = std::make_unique<Ort::Session>(m.env, onnx.c_str(), m.opts);
+    Ort::AllocatorWithDefaultOptions alloc;
+    m.in_name = m.session->GetInputNameAllocated(0, alloc).get();
+    m.out_name = m.session->GetOutputNameAllocated(0, alloc).get();
+  }
   return r;
 }
 
@@ -229,6 +241,17 @@ std::vector<uint8_t> WiredTableRecognizer::segment(const std::vector<uint8_t>& r
   std::vector<float> input;
   return {};
 #endif
+  if (m.mnn) {
+    std::vector<int> osh;
+    std::vector<float> seg = m.mnn->run(input.data(), {1, 3, nh, nw}, osh);  // int labels -> float
+    if (seg.empty() || osh.size() < 2) return {};
+    int oh = osh[osh.size() - 2], ow = osh[osh.size() - 1];
+    std::vector<uint8_t> out((size_t)oh * ow);
+    for (size_t i = 0; i < out.size() && i < seg.size(); ++i) out[i] = (uint8_t)(seg[i] + 0.5f);
+    nh = oh;
+    nw = ow;
+    return out;
+  }
   std::array<int64_t, 4> ishape{1, 3, nh, nw};
   Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
   Ort::Value in = Ort::Value::CreateTensor<float>(mi, input.data(), input.size(), ishape.data(), 4);

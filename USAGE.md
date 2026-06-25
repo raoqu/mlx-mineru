@@ -66,6 +66,15 @@ The static source builds are a one-time cost (idempotent — subsequent builds s
 Header-only deps (`nlohmann/json`, `CLI11`, `cpp-httplib`, `stb`) are committed under
 `third_party/` and need no fetch.
 
+**Optional — hybrid MNN pipeline acceleration.** `./build.sh --mnn` builds a static
+[MNN](https://github.com/alibaba/MNN) (`scripts/build_mnn_static.sh`) and converts the two
+pipeline models MNN runs faster with **exact parity** — table-cls (PP-LCNet, ~2× faster) and
+wired-table UNet (~1.15×) — to `.mnn` (`scripts/convert_pipeline_mnn.sh`, needs `pip install
+MNN`). At runtime each model uses its `.mnn` if one sits next to the `.onnx`, else falls back
+to ONNX Runtime. The other CV models stay on ORT — MNN can't run them (op-coverage gaps:
+det/rec/layout/slanet). MNN links the system Apple GPU frameworks only, so the binary stays
+free of non-system dylibs. Default builds (no `--mnn`) are ORT-only and unchanged.
+
 ### 3b. Model files → `mumodel/` (auto-discovered, auto-downloaded)
 
 The runtime loads everything from a single **`mumodel/`** bundle (VLM safetensors +

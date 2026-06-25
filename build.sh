@@ -8,6 +8,7 @@
 #   ./build.sh --test          # build, then run ctest
 #   ./build.sh --weights       # also fetch the ~2.2GB model weights first
 #   ./build.sh --mumodel       # also pre-fetch the ~3.2GB mumodel runtime bundle
+#   ./build.sh --mnn           # also build static MNN (hybrid pipeline accel) + convert models
 #   ./build.sh --clean         # remove build/ first (fresh configure)
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -17,6 +18,7 @@ BUILD_TYPE="Release"
 RUN_TESTS=0
 FETCH_WEIGHTS=0
 FETCH_MUMODEL=0
+BUILD_MNN=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -24,8 +26,9 @@ for arg in "$@"; do
     --test)    RUN_TESTS=1 ;;
     --weights) FETCH_WEIGHTS=1 ;;
     --mumodel) FETCH_MUMODEL=1 ;;
+    --mnn)     BUILD_MNN=1 ;;
     --clean)   rm -rf "$BUILD_DIR" ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -50,6 +53,12 @@ if [ "$FETCH_WEIGHTS" = "1" ]; then
 fi
 if [ "$FETCH_MUMODEL" = "1" ]; then
   ./scripts/fetch_mumodel.sh
+fi
+# Optional hybrid MNN acceleration: build static MNN (so the binary links it) and convert the
+# two exact-parity pipeline models. The binary uses the .mnn models when present, else ORT.
+if [ "$BUILD_MNN" = "1" ]; then
+  ./scripts/build_mnn_static.sh    || echo "WARN: static MNN build failed; pipeline stays on ONNX Runtime"
+  ./scripts/convert_pipeline_mnn.sh || echo "WARN: MNN model conversion skipped (models not present yet?)"
 fi
 
 # --- web UI: build the frontend (pnpm + vite) and embed it into the binary ---
