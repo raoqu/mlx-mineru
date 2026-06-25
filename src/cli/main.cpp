@@ -396,8 +396,8 @@ using ConvertFn = std::function<json(const std::vector<uint8_t>&, const ConvertO
 // (raw PDF body or multipart "files"; optional form fields max_pages/backend);
 // when serve_ui, every other GET is served from the embedded web/dist bundle.
 static int run_web_server(const ConvertFn& convert, const std::vector<std::string>& backends,
-                          const std::string& default_backend, const std::string& host, int port,
-                          bool serve_ui) {
+                          const std::string& default_backend, const json& engines,
+                          const std::string& host, int port, bool serve_ui) {
   httplib::Server srv;
   static std::mutex infer_mtx;  // serialize model use across requests
 
@@ -405,7 +405,7 @@ static int run_web_server(const ConvertFn& convert, const std::vector<std::strin
     res.set_content("{\"status\":\"ok\"}", "application/json");
   });
   srv.Get("/info", [&](const httplib::Request&, httplib::Response& res) {
-    json j = {{"backends", backends}, {"default", default_backend},
+    json j = {{"backends", backends}, {"default", default_backend}, {"engines", engines},
               {"version", mineru::kMineruVersion}, {"ui", serve_ui && mineru::web_assets_bundled()}};
     res.set_content(j.dump(), "application/json");
   });
@@ -865,10 +865,15 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
       json model_list = json::array();
       std::vector<mineru::PipelinePageImage> pages;
       std::vector<std::pair<int, int>> dims;  // (w,h) per page for cropping
+      double t_render = 0, t_detect = 0;      // 各阶段累计耗时(秒)
       for (int p = 0; p <= e; ++p) {
+        auto _tr = Clock::now();
         mineru::PageImage im = doc.render_page(p, dpi);
+        t_render += secs(_tr, Clock::now());
+        auto _td = Clock::now();
         model_list.push_back(mineru::build_page_model(*pl->layout, *pl->det, im.rgb, im.width,
                                                       im.height, mfr, tocr, trec, tcls, wrec));
+        t_detect += secs(_td, Clock::now());
         mineru::PipelinePageImage pg;
         pg.page_w = (int)std::lround(im.width_pt);
         pg.page_h = (int)std::lround(im.height_pt);
@@ -880,7 +885,10 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
             pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
         pages.push_back(std::move(pg));
       }
+      auto _ta = Clock::now();
       json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pl->rec);
+      double t_recog = secs(_ta, Clock::now());
+      auto _tc = Clock::now();
       // Inline image/chart crops as base64 data URIs so they render in the UI; in hybrid
       // mode also fill the span content via the VLM. Faithful to MinerU
       // _resolve_effective_image_analysis: medium effort forces image/chart understanding OFF
@@ -912,20 +920,53 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
               }
         }
       }
+      double t_crop = secs(_tc, Clock::now());
+      auto _tm = Clock::now();
       json out = to_out(pdf_info, o);
+      double t_md = secs(_tm, Clock::now());
       out["layout_pdf"] = layout_pdf_b64(pdf_info, pdf_bytes);
+      out["timing"] = {{"页面渲染", t_render},
+                       {"版面/检测/表格/公式", t_detect},
+                       {"文字识别+组装", t_recog},
+                       {"图像裁剪", t_crop},
+                       {"Markdown 生成", t_md}};
       return out;
     }
 #endif
     ensure_vlm();
+    g_prof = Prof{};  // reset per-request stage timing
     // image_analysis off -> skip image/chart understanding (still inline the crop).
     json pdf_info = convert_document(*vmodel, *vtok, doc, 0, e, "@inline", !o.image_analysis);
     json out = to_out(pdf_info, o);
     out["layout_pdf"] = layout_pdf_b64(pdf_info, pdf_bytes);
+    out["timing"] = {{"光栅化", g_prof.raster},
+                     {"版面-视觉编码", g_prof.layout_vision},
+                     {"版面-生成", g_prof.layout_gen},
+                     {"内容-视觉编码", g_prof.content_vision},
+                     {"内容-生成", g_prof.content_gen}};
     return out;
   };
 
-  return run_web_server(convert, backends, default_backend, host, port, serve_ui);
+  // Per-model inference engine, for the UI. The pipeline CV models use MNN when a `.mnn` is
+  // present next to the model dir, else ONNX Runtime; the VLM uses MLX/Metal.
+  json engines = json::array();
+  engines.push_back({{"name", "VLM (Qwen2-VL, 1.2B)"}, {"engine", "MLX / Metal"}});
+#ifdef MINERU_HAVE_PIPELINE
+  if (have_pl) {
+    auto eng = [&](const char* rel) {
+      return fsx::exists(pl_models + "/" + rel) ? "MNN" : "ONNX Runtime";
+    };
+    engines.push_back({{"name", "版面 Layout (PP-DocLayoutV2)"}, {"engine", "ONNX Runtime"}});
+    engines.push_back({{"name", "OCR 检测 (DBNet)"}, {"engine", eng("OCR/ocr_det.mnn")}});
+    engines.push_back({{"name", "OCR 识别 (SVTR)"}, {"engine", eng("OCR/ocr_rec.mnn")}});
+    engines.push_back({{"name", "表格分类 (PP-LCNet)"},
+                       {"engine", eng("TabCls/PP-LCNet_x1_0_table_cls.mnn")}});
+    engines.push_back({{"name", "有线表格 (UNet)"}, {"engine", eng("TabRec/UnetStructure/unet.mnn")}});
+    engines.push_back({{"name", "无线表格 (SLANet+)"}, {"engine", "ONNX Runtime"}});
+    engines.push_back({{"name", "公式 (UniMERNet)"}, {"engine", "ONNX Runtime"}});
+  }
+#endif
+  return run_web_server(convert, backends, default_backend, engines, host, port, serve_ui);
 }
 
 int main(int argc, char** argv) {

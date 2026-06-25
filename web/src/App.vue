@@ -33,6 +33,19 @@ const zipUrl = ref('')           // object URL of the bundled {name}.zip (md + i
 const zipName = ref('')
 const zipSizeKB = ref(0)
 const serverInfo = ref('')
+const engines = ref([])          // [{name, engine}] from /info — per-model inference engine
+const timing = ref(null)         // {stage: seconds} from /file_parse — per-stage timing
+
+const totalMs = computed(() => timing.value
+  ? Object.values(timing.value).reduce((a, b) => a + b, 0) * 1000 : 0)
+function barPct(sec) {
+  if (!timing.value) return 0
+  const mx = Math.max(...Object.values(timing.value), 1e-9)
+  return Math.max(2, (sec / mx) * 100)
+}
+function engClass(e) {
+  return e === 'MNN' ? 'eg-mnn' : (e || '').startsWith('MLX') ? 'eg-mlx' : 'eg-ort'
+}
 
 const steps = ['准备请求', '检查服务', '提交任务', '排队', '解析中', '下载结果', '整理输出', '完成']
 const stepState = reactive(steps.map(() => 'idle'))  // idle | active | done
@@ -47,6 +60,7 @@ onMounted(async () => {
       if (Array.isArray(j.backends) && j.backends.length) backends.value = j.backends
       if (j.default) backend.value = j.default
       else if (!backends.value.includes(backend.value)) backend.value = backends.value[0]
+      if (Array.isArray(j.engines)) engines.value = j.engines
       serverInfo.value = `${j.version || ''}`.trim()
     }
   } catch (_) { /* dev: backend may not be up yet */ }
@@ -120,7 +134,7 @@ function clearAll() {
 
 async function convert() {
   if (!file.value || converting.value) return
-  converting.value = true; error.value = ''; md.value = ''; contentList.value = null
+  converting.value = true; error.value = ''; md.value = ''; contentList.value = null; timing.value = null
   resetSteps()
   try {
     setStep(0, 'active'); setStep(0, 'done')
@@ -148,6 +162,7 @@ async function convert() {
     md.value = j.md_content || ''
     contentList.value = j.content_list || null
     images.value = j.images || {}
+    timing.value = j.timing || null
     await buildZip()
     // Swap the preview to the layout-highlighted PDF (boxes + reading-order numbers),
     // matching the source project's gradio preview.
@@ -310,6 +325,29 @@ function copy(text) { navigator.clipboard?.writeText(text) }
             </li>
           </ul>
           <div class="muted small">上传文件后开始转换。</div>
+        </div>
+
+        <!-- 各阶段耗时（转换后填充） -->
+        <div v-if="timing" class="card prof">
+          <div class="label"><b>各阶段耗时</b><span class="muted small"> · 共 {{ totalMs.toFixed(0) }} ms</span></div>
+          <ul class="prof-list">
+            <li v-for="(sec, name) in timing" :key="name">
+              <span class="pf-name">{{ name }}</span>
+              <span class="pf-bar"><i :style="{ width: barPct(sec) + '%' }"></i></span>
+              <span class="pf-val">{{ (sec * 1000).toFixed(0) }} ms</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- 各模型推理引擎（静态） -->
+        <div v-if="engines.length" class="card eng">
+          <div class="label"><b>推理引擎</b></div>
+          <ul class="eng-list">
+            <li v-for="m in engines" :key="m.name">
+              <span class="eg-name">{{ m.name }}</span>
+              <span class="eg-tag" :class="engClass(m.engine)">{{ m.engine }}</span>
+            </li>
+          </ul>
         </div>
       </section>
 

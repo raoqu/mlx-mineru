@@ -69,7 +69,8 @@ fi
 # Skipped gracefully if pnpm is unavailable (binary still builds; --web serves API only).
 if command -v pnpm >/dev/null 2>&1; then
   echo "[build] web UI: pnpm install + vite build ..."
-  ( cd web && pnpm install && pnpm build ) || echo "WARN: web build failed; --web will serve API only"
+  # install can fail offline; if node_modules is already present, build anyway.
+  ( cd web && { pnpm install || [ -d node_modules ]; } && pnpm build ) || echo "WARN: web build failed; --web will serve API only"
 else
   echo "WARN: pnpm not found; skipping web UI build (--web will serve API only)"
 fi
