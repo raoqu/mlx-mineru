@@ -8,7 +8,8 @@
 # Models (large) — runtime files in mumodel/, unused pre-conversion originals in orgmodel/
 /models/*
 !/models/.gitkeep
-/mumodel/
+/mumodel/*
+!/mumodel/README.md
 /orgmodel/
 
 # Editor / OS
