@@ -69,6 +69,12 @@ function setFile(f) {
   previewType.value = isPdf ? 'pdf' : (isImg ? 'image' : '')
   previewUrl.value = (isPdf || isImg) ? URL.createObjectURL(f) : ''
 }
+function b64ToBlobUrl(b64, mime) {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return URL.createObjectURL(new Blob([bytes], { type: mime }))
+}
 // Paste an image straight from the clipboard (screenshot or copied picture).
 function onPaste(e) {
   const items = e.clipboardData && e.clipboardData.items
@@ -121,6 +127,13 @@ async function convert() {
     setStep(5, 'done'); setStep(6, 'active')
     md.value = j.md_content || ''
     contentList.value = j.content_list || null
+    // Swap the preview to the layout-highlighted PDF (boxes + reading-order numbers),
+    // matching the source project's gradio preview.
+    if (j.layout_pdf) {
+      if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+      previewUrl.value = b64ToBlobUrl(j.layout_pdf, 'application/pdf')
+      previewType.value = 'pdf'
+    }
     setStep(6, 'done'); setStep(7, 'done')
   } catch (e) {
     error.value = String(e.message || e)

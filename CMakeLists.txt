@@ -112,6 +112,7 @@ add_library(mineru_core STATIC
   src/output/mkcontent.cpp
   src/io/image_write.cpp
   src/io/image_to_pdf.cpp
+  src/io/draw_bbox.cpp
 )
 target_include_directories(mineru_core PUBLIC
   ${CMAKE_SOURCE_DIR}/include

@@ -110,8 +110,8 @@
 | `{name}_middle.json` | ✅ | ✅ | ✅ |
 | `{name}_model.json` | ✅ | 🔧 ✅（pipeline；结构同 model_list） | ✅ |
 | `{name}_origin.pdf` | ✅ | 🔧 ✅ | ✅ |
-| `{name}_layout.pdf` | ✅ | ⬜（需移植 draw_bbox.py） | ⬜ |
-| `{name}_span.pdf` | ✅ | ⬜（需移植 draw_bbox.py） | ⬜ |
+| `{name}_layout.pdf` | ✅ | 🔧 ✅（移植 draw_bbox：分类色块+阅读序编号，光栅叠加） | ✅ |
+| `{name}_span.pdf` | ✅ | 🔧 ✅（span 描边框） | ✅ |
 | `images/` | ✅ | ✅（VLM 落盘 / web 内联 base64 data URI，仿 `_encode_table_inline_image`） | ✅ |
 | 目录结构 | `<out>/<name>/<parse_method>/` | `<out>/<stem>/{pipeline,vlm}/` | ✅ 等价 |
 
@@ -122,7 +122,8 @@
 1. ✅ ~~表格分类路由（SLANet+ vs UNet 由 TableClassifier 选）~~ —— 已完成（见 §1）。
 2. ✅ ~~`cross_page_table_merge` + `apply_title_leveling`~~ —— 本轮完成（合并已移植并 golden 验证；
    标题分级确定性路径本已对齐，LLM 路径不适用）。
-3. ⬜ `_layout.pdf` / `_span.pdf`（移植 draw_bbox.py 的 PDF 注记绘制）。
+3. ✅ ~~`_layout.pdf` / `_span.pdf`（移植 draw_bbox.py）~~ —— 本轮完成（光栅叠加，分类色块/颜色与
+   阅读序编号忠实于 draw_layout_bbox/draw_span_bbox；web 预览改为高亮 layout PDF，对齐 gradio）。
 4. 🟡 pin MLX 版本到 `<=0.31.1`。
 5. 🟡 逐行核对 pipeline 版 union_make 与本项目 mkcontent 的差异。
 6. 🟡 pdfium 光栅化 flag 对齐（关闭最后一个 VLM 歧义字形残差）。
