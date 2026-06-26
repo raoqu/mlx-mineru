@@ -445,6 +445,13 @@ bool is_fn(const json& b) { return b.value("type", "") == "formula_number"; }
 namespace {
 std::string cp_to_utf8(unsigned int cp) {
   std::string s;
+  // pdfium's FPDFText_GetUnicode returns 0 for glyphs not encoded in Unicode (emit nothing), and
+  // can hand back lone UTF-16 surrogate halves (0xD800-0xDFFF — paired halves are recombined by
+  // the caller) or out-of-range values. Encoding those naively yields invalid UTF-8 (e.g.
+  // U+D800 -> ED A0 80), which makes nlohmann::json::dump throw type_error.316; map any remaining
+  // non-scalar to U+FFFD so the extracted text stays well-formed UTF-8.
+  if (cp == 0) return s;
+  if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
   if (cp < 0x80) s += (char)cp;
   else if (cp < 0x800) { s += (char)(0xC0 | cp >> 6); s += (char)(0x80 | (cp & 0x3F)); }
   else if (cp < 0x10000) {
@@ -503,8 +510,17 @@ std::string chars_to_content(std::vector<const PageChar*>& cs) {
   double mw = widths[widths.size() / 2];
   std::string out;
   for (size_t i = 0; i < kept.size(); ++i) {
-    out += cp_to_utf8(kept[i]->cp);
-    if (i + 1 < kept.size() && kept[i + 1]->x0 - kept[i]->x1 > mw * 0.25 && kept[i]->cp != ' ' &&
+    unsigned int cp = kept[i]->cp;
+    // pdfium hands non-BMP characters back as a UTF-16 surrogate pair (hi in 0xD800-0xDBFF, lo in
+    // 0xDC00-0xDFFF) — e.g. the mathematical-italic equation variables in U+1D400+. Recombine the
+    // pair into its real code point and consume the low half, instead of emitting two U+FFFD.
+    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < kept.size() && kept[i + 1]->cp >= 0xDC00 &&
+        kept[i + 1]->cp <= 0xDFFF) {
+      cp = 0x10000 + ((cp - 0xD800) << 10) + (kept[i + 1]->cp - 0xDC00);
+      ++i;
+    }
+    out += cp_to_utf8(cp);
+    if (i + 1 < kept.size() && kept[i + 1]->x0 - kept[i]->x1 > mw * 0.25 && cp != ' ' &&
         kept[i + 1]->cp != ' ')
       out += ' ';
   }

@@ -5,6 +5,9 @@
 // SaveAsCopy) instead of reportlab+pypdf, preserving the original page content.
 #include "mineru/draw_bbox.hpp"
 
+#include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -61,14 +64,26 @@ void add_rect(FPDF_PAGE page, const json& bbox, double page_h, RGB c, bool fill)
   FPDF_PAGEOBJECT r = FPDFPageObj_CreateNewRect((float)x0, (float)(page_h - y1), (float)(x1 - x0),
                                                 (float)(y1 - y0));
   if (fill) {
-    FPDFPageObj_SetFillColor(r, c.r, c.g, c.b, 77);  // 0.3 * 255
+    // Highlight: a SOLID color pre-blended as 0.3-over-white, inserted BENEATH the page content
+    // (index 0) so the text renders on top — the same look as a 0.3 alpha fill, but with NO
+    // per-object alpha. We previously used FPDFPageObj_SetFillColor(...,77); pdfium emits that
+    // alpha as a named ExtGState added to the page, and on PDFs whose pages already define
+    // ExtGStates it writes a content stream referencing a name (e.g. /FXE4) that it never
+    // registers in the page's /ExtGState dict — so viewers drop the alpha and the fill renders
+    // OPAQUE, hiding the text. A solid color needs no ExtGState, so it is reliable in every
+    // viewer and every source PDF; drawing it underneath keeps the text legible.
+    auto blend = [](unsigned int v) -> unsigned int {
+      return (unsigned int)(0.3 * v + 0.7 * 255 + 0.5);
+    };
+    FPDFPageObj_SetFillColor(r, blend(c.r), blend(c.g), blend(c.b), 255);
     FPDFPath_SetDrawMode(r, FPDF_FILLMODE_WINDING, 0);
+    FPDFPage_InsertObjectAtIndex(page, r, 0);  // beneath the original page content
   } else {
     FPDFPageObj_SetStrokeColor(r, c.r, c.g, c.b, 255);
     FPDFPageObj_SetStrokeWidth(r, 1.0f);
     FPDFPath_SetDrawMode(r, 0, 1);
+    FPDFPage_InsertObject(page, r);  // outline on top
   }
-  FPDFPage_InsertObject(page, r);
 }
 
 void add_number(FPDF_DOCUMENT doc, FPDF_PAGE page, const json& bbox, double page_h, int n) {
@@ -139,11 +154,14 @@ std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<uin
       }
     }
     // Draw order faithful to draw_layout_bbox (codes omitted — pipeline has none here).
+    // Text-ish regions get a translucent highlight (drawn beneath the text by add_rect); the
+    // image/chart/table BODIES are outlined on top instead — a behind-highlight would be hidden
+    // by the opaque figure/image anyway, so an outline marks them without obscuring the content.
     for (auto& b : dropped) push_cat(b, {158, 158, 158}, true);
-    for (auto& b : tb) push_cat(b, {204, 204, 0}, true);
+    for (auto& b : tb) push_cat(b, {204, 204, 0}, /*fill=*/false);
     for (auto& b : tcap) push_cat(b, {255, 255, 102}, true);
     for (auto& b : tfoot) push_cat(b, {229, 255, 204}, true);
-    for (auto& b : ib) push_cat(b, {153, 255, 51}, true);
+    for (auto& b : ib) push_cat(b, {153, 255, 51}, /*fill=*/false);
     for (auto& b : icap) push_cat(b, {102, 178, 255}, true);
     for (auto& b : ifoot) push_cat(b, {255, 178, 102}, true);
     for (auto& b : titles) push_cat(b, {102, 102, 255}, true);
@@ -152,6 +170,41 @@ std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<uin
     for (auto& b : lists) push_cat(b, {40, 169, 92}, true);
     for (auto& b : litems) push_cat(b, {40, 169, 92}, false);
     for (auto& b : idx) push_cat(b, {40, 169, 92}, true);
+
+    // DEBUG (MINERU_DEBUG_BBOX=1): per page, report how many FILL rects are drawn and the maximum
+    // overlap/stack depth (how many fills cover the most-covered point) — to settle whether an
+    // "opaque" region comes from stacking many semi-transparent fills vs a single fill rendered
+    // opaque. Dump every fill rect for the page given by MINERU_DEBUG_BBOX_PAGE (0-based).
+    if (const char* dbg = std::getenv("MINERU_DEBUG_BBOX"); dbg && *dbg && *dbg != '0') {
+      int dbg_page = 0;
+      if (const char* dp = std::getenv("MINERU_DEBUG_BBOX_PAGE")) dbg_page = std::atoi(dp);
+      int nfill = 0;
+      std::vector<std::array<double, 4>> fills;
+      for (const Item& it : items)
+        if (it.fill) {
+          ++nfill;
+          fills.push_back({it.bbox[0], it.bbox[1], it.bbox[2], it.bbox[3]});
+        }
+      // max stack depth: sweep over all fill rects' corners as candidate points.
+      int max_depth = 0;
+      for (const auto& a : fills) {
+        double cx = (a[0] + a[2]) / 2, cy = (a[1] + a[3]) / 2;  // center of each rect
+        int d = 0;
+        for (const auto& b : fills)
+          if (b[0] <= cx && cx <= b[2] && b[1] <= cy && cy <= b[3]) ++d;
+        max_depth = std::max(max_depth, d);
+      }
+      std::fprintf(stderr,
+                   "[bbox-debug] page_idx=%d: %d fill rect(s), %d stroke rect(s), max stack depth=%d\n",
+                   page_idx, nfill, (int)items.size() - nfill, max_depth);
+      if (page_idx == dbg_page) {
+        for (const Item& it : items)
+          if (it.fill)
+            std::fprintf(stderr, "[bbox-debug]   fill rgb(%d,%d,%d) bbox[%.0f,%.0f,%.0f,%.0f]\n",
+                         it.c.r, it.c.g, it.c.b, (double)it.bbox[0], (double)it.bbox[1],
+                         (double)it.bbox[2], (double)it.bbox[3]);
+      }
+    }
 
     for (const Item& it : items) add_rect(page, it.bbox, page_h, it.c, it.fill);
     for (size_t k = 0; k < numbered.size(); ++k) add_number(doc, page, numbered[k], page_h, (int)k + 1);

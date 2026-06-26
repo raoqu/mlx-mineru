@@ -6,6 +6,7 @@
 // simplified; see AGENT.md.)
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -108,14 +109,27 @@ static void page_time_row(int cur, int total, const std::vector<std::string>& co
     std::ostringstream h;
     h << "[mlx-mineru] " << std::setw(6) << "page";
     for (const std::string& c : cols) h << " | " << std::setw(8) << c;
-    std::cerr << h.str() << "  (ms)\n";
+    h << " | " << std::setw(7) << "TOTAL";
+    std::cerr << h.str() << "   (stages ms; TOTAL s)\n";
   }
+  double sum = 0;
   std::ostringstream pg;
   pg << cur << "/" << total;
   std::ostringstream r;
   r << "[mlx-mineru] " << std::setw(6) << pg.str();
-  for (double v : ms) r << " | " << std::setw(8) << std::fixed << std::setprecision(1) << v;
+  for (double v : ms) {
+    sum += v;
+    r << " | " << std::setw(8) << std::llround(v);  // per-stage: whole milliseconds
+  }
+  r << " | " << std::setw(7) << std::fixed << std::setprecision(1) << sum / 1000.0;  // total: s
   std::cerr << r.str() << "\n";
+}
+
+// Serialize JSON tolerantly (UTF-8 output): replace any invalid byte with U+FFFD instead of
+// throwing type_error.316, so a stray byte from a PDF text layer / OCR / formula output can
+// never 500 a request or abort a CLI run.
+static std::string dump_safe(const json& j, int indent = -1) {
+  return j.dump(indent, ' ', /*ensure_ascii=*/false, json::error_handler_t::replace);
 }
 
 // Build a Qwen2-VL chat prompt: system + user(image + instruction) + assistant.
@@ -504,7 +518,7 @@ static int run_web_server(const ConvertFn& convert, const std::vector<std::strin
     try {
       std::lock_guard<std::mutex> lock(infer_mtx);
       json out = convert(bytes, opt);
-      res.set_content(out.dump(), "application/json");
+      res.set_content(dump_safe(out), "application/json");
     } catch (const std::exception& ex) {
       res.status = 500;
       res.set_content(std::string("{\"error\":\"") + ex.what() + "\"}", "application/json");
@@ -774,10 +788,10 @@ static int run_pipeline(const std::string& pdf_path, const std::string& models,
   };
   // Same artifact set as MinerU do_parse (default f_dump_* flags all on).
   write(stem + ".md", md);
-  write(stem + "_content_list.json", content_list.dump(4));
-  write(stem + "_content_list_v2.json", content_list_v2.dump(4));
-  write(stem + "_middle.json", middle.dump(4));
-  write(stem + "_model.json", model_list.dump(4));
+  write(stem + "_content_list.json", dump_safe(content_list, 4));
+  write(stem + "_content_list_v2.json", dump_safe(content_list_v2, 4));
+  write(stem + "_middle.json", dump_safe(middle, 4));
+  write(stem + "_model.json", dump_safe(model_list, 4));
   // _origin.pdf is the (possibly image-wrapped) PDF actually parsed, matching MinerU.
   std::ofstream(dir / (stem + "_origin.pdf"), std::ios::binary)
       .write(reinterpret_cast<const char*>(pdf_bytes.data()), pdf_bytes.size());
@@ -1173,7 +1187,7 @@ int main(int argc, char** argv) {
 
   auto _a0 = Clock::now();
   if (layout_only) {
-    write(stem + "_layout.json", layout_json.dump(2));
+    write(stem + "_layout.json", dump_safe(layout_json, 2));
   } else {
     // MinerU-style outputs (do_parse artifact set), all from the verified union_make /
     // middle_json contract.
@@ -1182,9 +1196,9 @@ int main(int argc, char** argv) {
     json content_list_v2 = mineru::union_make(pdf_info, mineru::make_mode::kContentListV2, "images");
     json middle = {{"pdf_info", pdf_info}, {"_backend", "vlm"}, {"_version_name", mineru::kMineruVersion}};
     write(stem + ".md", md);
-    write(stem + "_content_list.json", content_list.dump(4));
-    write(stem + "_content_list_v2.json", content_list_v2.dump(4));
-    write(stem + "_middle.json", middle.dump(4));
+    write(stem + "_content_list.json", dump_safe(content_list, 4));
+    write(stem + "_content_list_v2.json", dump_safe(content_list_v2, 4));
+    write(stem + "_middle.json", dump_safe(middle, 4));
     std::ofstream(dir / (stem + "_origin.pdf"), std::ios::binary)
         .write(reinterpret_cast<const char*>(pdf_bytes.data()), pdf_bytes.size());
     {  // _layout.pdf + _span.pdf (draw_bbox vector overlay).

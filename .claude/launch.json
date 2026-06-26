@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mlx-mineru-web",
+      "runtimeExecutable": "./build/mlx-mineru",
+      "runtimeArgs": ["--web", "--port", "8745"],
+      "port": 8745
+    }
+  ]
+}

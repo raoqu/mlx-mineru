@@ -15,29 +15,43 @@ body {
   color: #1c2530;
   font-size: 14px;
 }
-.page { max-width: 1680px; margin: 0 auto; padding: 0 16px 32px; }
+/* Full-height app shell: hero stays compact at the top, the columns fill the rest of the
+   viewport and scroll internally (so the markdown panel gets a bounded height + scrollbar
+   instead of stretching the whole page). */
+.page { max-width: 1680px; margin: 0 auto; padding: 0 16px 16px; height: 100vh; display: flex; flex-direction: column; }
 
-/* hero */
+/* hero (compact) */
 .hero {
   background: linear-gradient(180deg, var(--blue1), var(--blue2));
   color: #fff; text-align: center; border-radius: 0 0 8px 8px;
-  padding: 34px 20px 30px; margin-bottom: 18px;
+  padding: 14px 20px 12px; margin-bottom: 14px; flex: none;
 }
-.hero h1 { margin: 0 0 14px; font-size: 40px; font-weight: 800; letter-spacing: 1px; }
-.hero .sub { margin: 4px 0; opacity: .92; font-size: 15px; }
-.hero-btns { margin-top: 18px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.hero h1 { margin: 0 0 6px; font-size: 26px; font-weight: 800; letter-spacing: 1px; }
+.hero .sub { margin: 2px 0; opacity: .92; font-size: 13px; }
+.hero-btns { margin-top: 10px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 .pill {
-  background: #1c1f24; color: #fff; text-decoration: none; padding: 9px 20px;
-  border-radius: 22px; font-size: 14px; font-weight: 600; transition: opacity .15s;
+  background: #1c1f24; color: #fff; text-decoration: none; padding: 6px 16px;
+  border-radius: 22px; font-size: 13px; font-weight: 600; transition: opacity .15s;
 }
 .pill:hover { opacity: .82; }
 
 /* layout */
-.cols { display: grid; grid-template-columns: 360px 1fr 1fr; gap: 16px; align-items: start; }
-@media (max-width: 1200px) { .cols { grid-template-columns: 1fr; } }
+/* grid-template-rows:1fr + flex:1 makes the row fill the viewport height left by the hero, so
+   each column is a bounded box; min-height:0 lets the inner bodies scroll instead of growing. */
+.cols { display: grid; grid-template-columns: 360px 1fr 1fr; grid-template-rows: 1fr; gap: 16px; flex: 1; min-height: 0; }
+@media (max-width: 1200px) {
+  .page { height: auto; }
+  .cols { grid-template-columns: 1fr; grid-template-rows: none; }
+  .controls { overflow: visible; }
+  .preview, .output { height: 78vh; }
+}
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
-.controls { padding: 16px; }
-.preview, .output { min-height: 760px; display: flex; flex-direction: column; }
+.controls { padding: 16px; overflow-y: auto; }
+/* min-width:0 stops the two 1fr tracks from blowing out: the output's wide content (long title,
+   bar-chart image, tables) otherwise expands its track (grid default min-width:auto) and crushes
+   the preview into a thin strip. With min-width:0 the columns split evenly and wide content scrolls
+   inside .out-body instead. */
+.preview, .output { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 
 /* controls */
 .label { font-size: 13px; margin-bottom: 6px; }
@@ -90,8 +104,8 @@ input[type="range"] { accent-color: var(--orange); margin-top: 8px; }
 
 /* preview / output cards */
 .card-head { padding: 12px 14px; border-bottom: 1px solid var(--line); color: #4a5560; font-size: 13px; }
-.preview-body { flex: 1; display: flex; align-items: center; justify-content: center; color: #c2c8d0; }
-.pdf { width: 100%; height: 100%; min-height: 720px; border: 0; }
+.preview-body { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; color: #c2c8d0; }
+.pdf { width: 100%; height: 100%; min-height: 0; border: 0; }
 .img-preview { max-width: 100%; max-height: 740px; object-fit: contain; align-self: center; }
 .ph { font-size: 46px; }
 .ph-named { color: #4a5560; font-weight: 600; }
