@@ -69,12 +69,21 @@ void fill_span_text(json& page_info, const std::vector<uint8_t>& rgb, int W, int
 
   for (size_t beg = 0; beg < idx.size(); beg += kRecBatch) {
     size_t end = std::min(idx.size(), beg + kRecBatch);
-    double max_wh = aspect[idx[end - 1]];
+    double max_wh = aspect[idx[end - 1]];  // widest aspect in this group
+    std::vector<const std::vector<uint8_t>*> rgbs;
+    std::vector<int> ws, hs;
     for (size_t k = beg; k < end; ++k) {
       SpanJob& j = jobs[idx[k]];
-      if (j.w <= 0 || j.h <= 0) { (*j.span)["content"] = ""; (*j.span)["score"] = 0.0; continue; }
-      RecResult r = rec.recognize(j.crop, j.w, j.h, max_wh);
-      if (r.score > min_confidence) {
+      rgbs.push_back(&j.crop);
+      ws.push_back(j.w);
+      hs.push_back(j.h);
+    }
+    // ONE batched forward over the group (stable shape -> MNN/Metal parallelizes it).
+    std::vector<RecResult> br = rec.recognize_batch(rgbs, ws, hs, max_wh);
+    for (size_t k = beg, b = 0; k < end; ++k, ++b) {
+      SpanJob& j = jobs[idx[k]];
+      const RecResult& r = br[b];
+      if (j.w > 0 && j.h > 0 && r.score > min_confidence) {
         (*j.span)["content"] = r.text;
         (*j.span)["score"] = std::round(r.score * 1000.0) / 1000.0;  // round(score, 3)
       } else {
