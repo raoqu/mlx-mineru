@@ -31,13 +31,23 @@ namespace mineru {
 //   table_cls + wired_rec (optional, both required): classify each table; for wired (or
 //             low-confidence wireless) tables also run the UNet and pick the better HTML,
 //             matching MinerU's wired/wireless selection.
+// Per-page detection-stage timings in milliseconds, filled by build_page_model when a non-null
+// `times` is passed (for the CLI/web per-page progress breakdown). All default 0.
+struct PageStageTimes {
+  double layout = 0;    // PP-DocLayoutV2 region detection
+  double ocr_det = 0;   // DBNet text-line detection
+  double table = 0;     // table OCR + SLANet+/UNet structure (sum over table regions)
+  double formula = 0;   // MFR (sum over formula regions)
+};
+
 nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector& det,
                                 const std::vector<uint8_t>& rgb, int w, int h,
                                 const FormulaRecognizer* mfr = nullptr,
                                 const OcrPipeline* ocr = nullptr,
                                 const TableRecognizer* table_rec = nullptr,
                                 const TableClassifier* table_cls = nullptr,
-                                const WiredTableRecognizer* wired_rec = nullptr);
+                                const WiredTableRecognizer* wired_rec = nullptr,
+                                PageStageTimes* times = nullptr);
 
 struct PipelinePageImage {
   std::vector<uint8_t> rgb;  // rendered page, w*h*3 RGB8
@@ -46,8 +56,15 @@ struct PipelinePageImage {
   std::vector<PageChar> chars;  // embedded PDF chars; non-empty -> digital text path
 };
 
+// Assemble + post-OCR text-fill for ONE page (no cross-page finalize): exactly one iteration
+// of pipeline_assemble_pages. `page_idx` is the 0-based index within the document. Lets a caller
+// process pages one at a time (detect -> recognize -> assemble) and stream per-page progress;
+// call cross_page_table_merge() once over the full pdf_info afterwards.
+nlohmann::json assemble_one_page(const nlohmann::json& model_page, PipelinePageImage& page,
+                                 const TextRecognizer& rec, int page_idx);
+
 // model_list[i] = {"layout_dets": [...], "page_info": {...}} for page i. Returns the
-// pdf_info array (one assembled+filled page_info per page).
+// pdf_info array (one assembled+filled page_info per page), with cross-page tables merged.
 nlohmann::json pipeline_assemble_pages(const nlohmann::json& model_list,
                                        std::vector<PipelinePageImage>& pages,
                                        const TextRecognizer& rec);

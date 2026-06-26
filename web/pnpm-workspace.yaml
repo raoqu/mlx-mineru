@@ -1,2 +1,8 @@
+# pnpm 11 blocks dependency build scripts unless approved here. esbuild (pulled in by vite) has a
+# postinstall that fetches/links its native binary; without approval pnpm errors
+# ERR_PNPM_IGNORED_BUILDS and `pnpm install` exits 1, failing the web build in build.sh.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
+# kept for older pnpm (10.x) which reads this key instead of allowBuilds:
+onlyBuiltDependencies:
+  - esbuild

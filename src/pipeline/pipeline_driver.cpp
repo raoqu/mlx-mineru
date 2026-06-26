@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <string>
 
@@ -140,17 +141,27 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
                                 const FormulaRecognizer* mfr, const OcrPipeline* ocr,
                                 const TableRecognizer* table_rec,
                                 const TableClassifier* table_cls,
-                                const WiredTableRecognizer* wired_rec) {
+                                const WiredTableRecognizer* wired_rec, PageStageTimes* times) {
+  using Clk = std::chrono::steady_clock;
+  auto ms = [](Clk::time_point a, Clk::time_point b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+  };
   nlohmann::json dets = nlohmann::json::array();
   // Region boxes (reading-order index already assigned by the detector).
-  for (const LayoutBox& b : layout.detect(rgb, w, h)) {
+  auto _t0 = Clk::now();
+  std::vector<LayoutBox> boxes = layout.detect(rgb, w, h);
+  if (times) times->layout += ms(_t0, Clk::now());
+  for (const LayoutBox& b : boxes) {
     nlohmann::json d = {{"cls_id", b.cls_id}, {"label", b.label}, {"score", b.score},
                         {"bbox", {b.bbox[0], b.bbox[1], b.bbox[2], b.bbox[3]}}, {"index", b.index}};
     if (mfr && (b.label == "display_formula" || b.label == "inline_formula")) {
+      auto _tf = Clk::now();
       int cw, ch;
       std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
       d["latex"] = (cw > 0 && ch > 0) ? mfr->recognize(crop, cw, ch).latex : std::string();
+      if (times) times->formula += ms(_tf, Clk::now());
     } else if (ocr && table_rec && b.label == "table") {
+      auto _tt = Clk::now();
       int cw, ch;
       std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
       std::string html;
@@ -174,11 +185,15 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
         }
       }
       d["html"] = html;
+      if (times) times->table += ms(_tt, Clk::now());
     }
     dets.push_back(std::move(d));
   }
   // OCR text-line boxes -> ocr_text dets (axis-aligned bbox, empty text).
-  for (const DetBox& d : det.detect(rgb, w, h)) {
+  auto _td = Clk::now();
+  std::vector<DetBox> det_boxes = det.detect(rgb, w, h);
+  if (times) times->ocr_det += ms(_td, Clk::now());
+  for (const DetBox& d : det_boxes) {
     int x0 = d.pts[0][0], y0 = d.pts[0][1], x1 = d.pts[0][0], y1 = d.pts[0][1];
     for (auto& p : d.pts) {
       x0 = std::min(x0, p[0]); y0 = std::min(y0, p[1]);
@@ -190,30 +205,33 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
   return {{"layout_dets", dets}, {"page_info", {{"width", w}, {"height", h}}}};
 }
 
+nlohmann::json assemble_one_page(const nlohmann::json& model_page, PipelinePageImage& pg,
+                                 const TextRecognizer& rec, int page_idx) {
+  nlohmann::json page_info = assemble_page_info(model_page, pg.page_w, pg.page_h, page_idx);
+  double scale = pg.page_w > 0 ? (double)pg.w / pg.page_w : 1.0;
+  // Digital PDF (embedded text) -> char-fill; scanned page -> OCR. For digital pages, any
+  // span left empty by char-fill (e.g. text inside an image) falls back to OCR.
+  if (!pg.chars.empty()) {
+    fill_chars_in_page(page_info, pg.chars);
+    fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec, /*min_confidence=*/0.5f,
+                   /*only_empty=*/true);
+  } else {
+    fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec);
+  }
+  // formula_number -> \tag{N} after the numbers are OCR-filled (both block lists, since
+  // our assembly materializes para_blocks independently).
+  optimize_formula_numbers(page_info["preproc_blocks"]);
+  optimize_formula_numbers(page_info["para_blocks"]);
+  return page_info;
+}
+
 nlohmann::json pipeline_assemble_pages(const nlohmann::json& model_list,
                                        std::vector<PipelinePageImage>& pages,
                                        const TextRecognizer& rec) {
   nlohmann::json pdf_info = nlohmann::json::array();
   size_t n = std::min(model_list.size(), pages.size());
-  for (size_t i = 0; i < n; ++i) {
-    PipelinePageImage& pg = pages[i];
-    nlohmann::json page_info = assemble_page_info(model_list[i], pg.page_w, pg.page_h, (int)i);
-    double scale = pg.page_w > 0 ? (double)pg.w / pg.page_w : 1.0;
-    // Digital PDF (embedded text) -> char-fill; scanned page -> OCR. For digital pages, any
-    // span left empty by char-fill (e.g. text inside an image) falls back to OCR.
-    if (!pg.chars.empty()) {
-      fill_chars_in_page(page_info, pg.chars);
-      fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec, /*min_confidence=*/0.5f,
-                     /*only_empty=*/true);
-    } else {
-      fill_span_text(page_info, pg.rgb, pg.w, pg.h, scale, rec);
-    }
-    // formula_number -> \tag{N} after the numbers are OCR-filled (both block lists, since
-    // our assembly materializes para_blocks independently).
-    optimize_formula_numbers(page_info["preproc_blocks"]);
-    optimize_formula_numbers(page_info["para_blocks"]);
-    pdf_info.push_back(std::move(page_info));
-  }
+  for (size_t i = 0; i < n; ++i)
+    pdf_info.push_back(assemble_one_page(model_list[i], pages[i], rec, (int)i));
   // Document-level finalize: merge tables that continue across a page break (faithful to
   // finalize_middle_json_from_preproc -> cross_page_table_merge). Title leveling stays a
   // no-op without the optional LLM config, matching MinerU's deterministic path.

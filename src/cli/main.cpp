@@ -6,11 +6,15 @@
 // simplified; see AGENT.md.)
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <unistd.h>  // isatty / fileno — TTY-aware progress
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -43,6 +47,7 @@
 #include "mineru/ocr_det.hpp"
 #include "mineru/ocr_rec.hpp"
 #include "mineru/pipeline_driver.hpp"
+#include "mineru/table_merge.hpp"  // cross_page_table_merge (per-page assemble -> doc finalize)
 #endif
 
 using nlohmann::json;
@@ -62,6 +67,55 @@ static Prof g_prof;
 using Clock = std::chrono::steady_clock;
 static double secs(Clock::time_point a, Clock::time_point b) {
   return std::chrono::duration<double>(b - a).count();
+}
+
+// CLI-friendly per-page progress, always to STDERR — so it shows on the console in every mode
+// (one-shot CLI and the --web server alike) and never contaminates the JSON written to stdout.
+// On an interactive terminal it rewrites a single line (carriage-return + clear-to-EOL); when
+// stderr is redirected (log file / pipe) it emits one discrete line per update so nothing is
+// lost. `extra` is an optional stage hint (e.g. "render", "layout+OCR").
+static bool stderr_is_tty() {
+  static const bool tty = ::isatty(::fileno(stderr)) != 0;
+  return tty;
+}
+static void progress_page(int cur, int total, const std::string& extra = "") {
+  std::ostringstream s;
+  s << "[mlx-mineru] page " << cur << "/" << total;
+  if (!extra.empty()) s << "  " << extra;
+  if (stderr_is_tty())
+    std::cerr << "\r\033[K" << s.str() << std::flush;  // overwrite one live line
+  else
+    std::cerr << s.str() << "\n";
+}
+// End a live progress line (no-op when redirected, since each update was its own line).
+static void progress_done(const std::string& msg = "") {
+  if (stderr_is_tty()) {
+    if (!msg.empty()) std::cerr << "\r\033[K[mlx-mineru] " << msg;
+    std::cerr << "\n" << std::flush;
+  } else if (!msg.empty()) {
+    std::cerr << "[mlx-mineru] " << msg << "\n";
+  }
+}
+
+// Retained per-page stage-timing line (milliseconds), pipe-separated, with a one-time aligned
+// header (printed when cur==1). Unlike progress_*, these lines are NOT overwritten — each
+// completed page leaves its breakdown on the console (and in any redirected log). Always stderr.
+//   [mlx-mineru]   page  |   render |   layout |  ocr_det |    table |  formula |    recog  (ms)
+//   [mlx-mineru]   1/13  |     41.2 |     88.3 |     55.0 |      0.0 |      0.0 |     12.4
+static void page_time_row(int cur, int total, const std::vector<std::string>& cols,
+                          const std::vector<double>& ms) {
+  if (cur == 1) {
+    std::ostringstream h;
+    h << "[mlx-mineru] " << std::setw(6) << "page";
+    for (const std::string& c : cols) h << " | " << std::setw(8) << c;
+    std::cerr << h.str() << "  (ms)\n";
+  }
+  std::ostringstream pg;
+  pg << cur << "/" << total;
+  std::ostringstream r;
+  r << "[mlx-mineru] " << std::setw(6) << pg.str();
+  for (double v : ms) r << " | " << std::setw(8) << std::fixed << std::setprecision(1) << v;
+  std::cerr << r.str() << "\n";
 }
 
 // Build a Qwen2-VL chat prompt: system + user(image + instruction) + assistant.
@@ -330,12 +384,14 @@ static json convert_batched(const mineru::Qwen2VLModel& model, const mineru::Qwe
   std::vector<int> nimgs(P);
   std::vector<std::vector<int>> prompts(P);
   for (int p = 0; p < P; ++p) {
+    progress_page(p + 1, P, "prepare layout");
     LayoutPrep lp = prep_layout(model, tok, pages[p]);
     pvs[p] = std::move(lp.pv);
     grids[p] = lp.grid;
     nimgs[p] = lp.n_img;
     prompts[p] = std::move(lp.prompt);
   }
+  progress_done();
   std::cerr << "[mlx-mineru] batched layout over " << P << " page(s) ...\n";
   auto _lv0 = Clock::now();
   std::vector<std::vector<float>> lembeds = model.forward_vision_batch(pvs, grids);
@@ -532,11 +588,20 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
                                      const std::string& images_dir = "") {
   json model_list = json::array();
   std::vector<mineru::PipelinePageImage> pages;
+  json pdf_info = json::array();
+  int total = e - s + 1;
+  static const std::vector<std::string> kCols = {"render",  "layout",  "ocr_det",
+                                                  "table",   "formula", "recog"};
+  // Process each page to completion (render -> detect -> recognize/assemble) so its full
+  // per-stage timing prints as the page finishes; cross-page table merge runs once at the end.
   for (int p = s; p <= e; ++p) {
+    auto _tr = Clock::now();
     mineru::PageImage im = doc.render_page(p, dpi);
-    model_list.push_back(mineru::build_page_model(*pm.layout, *pm.det, im.rgb, im.width, im.height,
-                                                  pm.mfr.get(), pm.table_ocr.get(), pm.table_rec.get(),
-                                                  pm.table_cls.get(), pm.wired_rec.get()));
+    double r_ms = secs(_tr, Clock::now()) * 1000.0;
+    mineru::PageStageTimes st;
+    json mpage = mineru::build_page_model(*pm.layout, *pm.det, im.rgb, im.width, im.height,
+                                          pm.mfr.get(), pm.table_ocr.get(), pm.table_rec.get(),
+                                          pm.table_cls.get(), pm.wired_rec.get(), &st);
     mineru::PipelinePageImage pg;
     pg.page_w = (int)std::lround(im.width_pt);
     pg.page_h = (int)std::lround(im.height_pt);
@@ -545,9 +610,15 @@ static json pipeline_doc_to_pdf_info(PipelineModels& pm, mineru::PdfDocument& do
     pg.rgb = std::move(im.rgb);
     for (const mineru::PdfChar& c : doc.extract_chars(p))  // digital text layer if present
       pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
+    auto _ta = Clock::now();
+    pdf_info.push_back(mineru::assemble_one_page(mpage, pg, *pm.rec, p - s));
+    double a_ms = secs(_ta, Clock::now()) * 1000.0;
+    model_list.push_back(std::move(mpage));
     pages.push_back(std::move(pg));
+    page_time_row(p - s + 1, total, kCols,
+                  {r_ms, st.layout, st.ocr_det, st.table, st.formula, a_ms});
   }
-  json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pm.rec);
+  mineru::cross_page_table_merge(pdf_info);  // doc-level finalize (cross-page tables)
   // Cut image/chart crops to images/{hash}.jpg and reference them, like MinerU do_parse.
   if (!images_dir.empty()) {
     for (size_t p = 0; p < pdf_info.size() && p < pages.size(); ++p) {
@@ -862,18 +933,22 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
       mineru::TableRecognizer* trec = o.table_enable ? pl->table_rec.get() : nullptr;
       mineru::TableClassifier* tcls = o.table_enable ? pl->table_cls.get() : nullptr;
       mineru::WiredTableRecognizer* wrec = o.table_enable ? pl->wired_rec.get() : nullptr;
-      json model_list = json::array();
       std::vector<mineru::PipelinePageImage> pages;
       std::vector<std::pair<int, int>> dims;  // (w,h) per page for cropping
-      double t_render = 0, t_detect = 0;      // 各阶段累计耗时(秒)
+      double t_render = 0, t_detect = 0, t_recog = 0;  // 各阶段累计耗时(秒)
+      json pdf_info = json::array();
+      // Process each page to completion (render -> detect -> recognize/assemble) so its full
+      // per-stage timing can be printed the moment the page finishes; the cross-page table
+      // merge is a document-level finalize run once after all pages.
+      static const std::vector<std::string> kCols = {"render",  "layout",  "ocr_det",
+                                                      "table",   "formula", "recog"};
       for (int p = 0; p <= e; ++p) {
         auto _tr = Clock::now();
         mineru::PageImage im = doc.render_page(p, dpi);
-        t_render += secs(_tr, Clock::now());
-        auto _td = Clock::now();
-        model_list.push_back(mineru::build_page_model(*pl->layout, *pl->det, im.rgb, im.width,
-                                                      im.height, mfr, tocr, trec, tcls, wrec));
-        t_detect += secs(_td, Clock::now());
+        double r_ms = secs(_tr, Clock::now()) * 1000.0;
+        mineru::PageStageTimes st;
+        json mpage = mineru::build_page_model(*pl->layout, *pl->det, im.rgb, im.width, im.height,
+                                              mfr, tocr, trec, tcls, wrec, &st);
         mineru::PipelinePageImage pg;
         pg.page_w = (int)std::lround(im.width_pt);
         pg.page_h = (int)std::lround(im.height_pt);
@@ -883,11 +958,17 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
         if (!o.is_ocr)  // is_ocr forces OCR (ignore the embedded text layer)
           for (const mineru::PdfChar& c : doc.extract_chars(p))
             pg.chars.push_back({c.cp, c.idx, c.x0, c.y0, c.x1, c.y1});
+        auto _ta = Clock::now();
+        pdf_info.push_back(mineru::assemble_one_page(mpage, pg, *pl->rec, p));
+        double a_ms = secs(_ta, Clock::now()) * 1000.0;
         pages.push_back(std::move(pg));
+        t_render += r_ms / 1000.0;
+        t_detect += (st.layout + st.ocr_det + st.table + st.formula) / 1000.0;
+        t_recog += a_ms / 1000.0;
+        page_time_row(p + 1, e + 1, kCols,
+                      {r_ms, st.layout, st.ocr_det, st.table, st.formula, a_ms});
       }
-      auto _ta = Clock::now();
-      json pdf_info = mineru::pipeline_assemble_pages(model_list, pages, *pl->rec);
-      double t_recog = secs(_ta, Clock::now());
+      mineru::cross_page_table_merge(pdf_info);  // doc-level finalize (cross-page tables)
       auto _tc = Clock::now();
       // Inline image/chart crops as base64 data URIs so they render in the UI; in hybrid
       // mode also fill the span content via the VLM. Faithful to MinerU
