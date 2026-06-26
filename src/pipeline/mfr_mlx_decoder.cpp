@@ -169,13 +169,8 @@ std::vector<std::vector<int>> MfrMlxDecoder::decode(const std::vector<std::vecto
       int tok = (int)np[b];
       cur[b] = tok;
       if (!done[b]) {
-        if (force_steps > 0) {
-          result[b].push_back(tok);
-        } else if (tok == c.eos) {
-          done[b] = 1;
-        } else {
-          result[b].push_back(tok);
-        }
+        result[b].push_back(tok);  // include the final EOS, matching the ORT decoder's output
+        if (force_steps == 0 && tok == c.eos) done[b] = 1;
       }
       if (!done[b]) all_done = false;
     }

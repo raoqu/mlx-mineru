@@ -17,6 +17,9 @@
 
 #include "mineru/cv_resize.hpp"  // resize_rgb8_cv (real cv2.resize)
 #include "mnn_runner.hpp"        // hybrid MNN path (Metal-accelerated encoder + decoder)
+#ifdef MINERU_HAVE_MLX
+#include "mineru/mfr_mlx_decoder.hpp"  // MLX/Metal batched decoder (validated == ORT)
+#endif
 #include "onnxruntime_cxx_api.h"
 #ifdef MINERU_HAVE_OPENCV
 #include <opencv2/imgproc.hpp>
@@ -82,6 +85,9 @@ struct FormulaRecognizer::Impl {
   Ort::SessionOptions opts;
   std::unique_ptr<Ort::Session> enc, dec;
   std::unique_ptr<MnnRunner> enc_mnn;  // Metal-accelerated encoder when a `.mnn` sibling exists
+#ifdef MINERU_HAVE_MLX
+  std::unique_ptr<MfrMlxDecoder> mlx_dec;  // MLX/Metal decoder when its safetensors are present
+#endif
   std::string enc_in, enc_out;
   std::vector<std::string> vocab;  // id -> token
   std::array<int, 0x200> u2b;
@@ -130,6 +136,19 @@ FormulaRecognizer FormulaRecognizer::load(const std::string& encoder_onnx,
     std::error_code ec;
     if (std::filesystem::exists(mp, ec)) m.enc_mnn = MnnRunner::load(mp, {m.enc_in}, {m.enc_out});
   }
+#ifdef MINERU_HAVE_MLX
+  // Prefer the MLX/Metal decoder when its weights sit next to the .onnx (mfr_decoder.safetensors
+  // + mfr_decoder_config.json from scripts/extract_mfr_decoder_weights.py). Validated byte-
+  // identical to the ORT decoder; opt out with MINERU_MFR_MLX=0. Falls back to ORT on load failure.
+  const char* mlx_off = std::getenv("MINERU_MFR_MLX");
+  if (!(mlx_off && std::string(mlx_off) == "0") &&
+      decoder_onnx.size() > 5 && decoder_onnx.substr(decoder_onnx.size() - 5) == ".onnx") {
+    std::string base = decoder_onnx.substr(0, decoder_onnx.size() - 5);
+    std::error_code ec;
+    if (std::filesystem::exists(base + ".safetensors", ec))
+      m.mlx_dec = MfrMlxDecoder::load(base + ".safetensors", base + "_config.json");
+  }
+#endif
   return r;
 }
 
@@ -173,6 +192,14 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
   double enc_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t_enc0).count();
   auto _t_dec0 = std::chrono::steady_clock::now();
 
+  FormulaResult res;
+#ifdef MINERU_HAVE_MLX
+  // MLX/Metal decoder (validated byte-identical to the ORT decoder; see test_mfr_mlx).
+  if (m.mlx_dec) {
+    res.ids = m.mlx_dec->decode({hid}, {N}, kMaxNewTokens).at(0);
+  } else
+#endif
+  {  // ---- ORT KV-cache decoder ----
   // Greedy decode with a KV cache: the merged decoder graph caches each layer's self-attention
   // K/V (fed back present->past every step) so a step processes only the new token, instead of
   // recomputing the whole prefix (O(T) instead of O(T^2)). Cross-attention is recomputed from
@@ -202,7 +229,6 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
     cache.push_back(Ort::Value::CreateTensor<float>(mi, empty[i].data(), 0, sh.data(), 4));
   }
 
-  FormulaResult res;
   int64_t cur = kBOS;
   for (int step = 0; step < kMaxNewTokens; ++step) {
     int64_t id_val = cur;
@@ -234,11 +260,16 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
     cache.clear();  // present -> past for the next step (no copy; reuse ORT-owned buffers)
     for (int i = 0; i < 2 * kDecLayers; ++i) cache.push_back(std::move(outs[1 + i]));
   }
+  }  // end ORT decoder branch
 
   if (dbg_mfr) {
     double dec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t_dec0).count();
-    std::fprintf(stderr, "[mfr-debug] encoder(%s)=%.1f ms | decoder(ORT, %d steps)=%.1f ms\n",
-                 m.enc_mnn ? "MNN/Metal" : "ORT", enc_ms, (int)res.ids.size(), dec_ms);
+    const char* dec_eng = "ORT";
+#ifdef MINERU_HAVE_MLX
+    if (m.mlx_dec) dec_eng = "MLX/Metal";
+#endif
+    std::fprintf(stderr, "[mfr-debug] encoder(%s)=%.1f ms | decoder(%s, %d steps)=%.1f ms\n",
+                 m.enc_mnn ? "MNN/Metal" : "ORT", enc_ms, dec_eng, (int)res.ids.size(), dec_ms);
   }
   // Byte-level decode (skip special tokens).
   std::string bytes;

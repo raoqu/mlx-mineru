@@ -330,8 +330,16 @@ target_link_libraries(mineru_vlm PUBLIC thirdparty_headers)
 
 # ---- Pipeline backend library (defined early so the CLI can link it) --------
 if(HAVE_ORT)
-  add_library(mineru_pipeline STATIC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp src/pipeline/wired_table.cpp src/pipeline/cv_resize.cpp src/pipeline/mnn_runner.cpp)
+  set(MINERU_PIPELINE_SRC src/pipeline/layout_det.cpp src/pipeline/table_cls.cpp src/pipeline/ocr_rec.cpp src/pipeline/ocr_det.cpp src/pipeline/ocr.cpp src/pipeline/formula_rec.cpp src/pipeline/table_rec.cpp src/pipeline/post_ocr.cpp src/pipeline/pipeline_driver.cpp src/pipeline/wired_table.cpp src/pipeline/cv_resize.cpp src/pipeline/mnn_runner.cpp)
+  if(HAVE_MLX)
+    list(APPEND MINERU_PIPELINE_SRC src/pipeline/mfr_mlx_decoder.cpp)  # MLX/Metal MFR decoder
+  endif()
+  add_library(mineru_pipeline STATIC ${MINERU_PIPELINE_SRC})
   target_include_directories(mineru_pipeline PUBLIC ${CMAKE_SOURCE_DIR}/include)
+  if(HAVE_MLX)
+    target_link_libraries(mineru_pipeline PUBLIC mlx)
+    target_compile_definitions(mineru_pipeline PUBLIC MINERU_HAVE_MLX=1)
+  endif()
   # MNN must come BEFORE ONNX Runtime on the link line: both statically bundle flatbuffers, and
   # ORT is -force_load'd (pulls in its flatbuffers symbols first). If ORT wins, MNN parses .mnn
   # with ORT's flatbuffers and Module::load fails ("Invalidate buffer"). Linking MNN first makes
