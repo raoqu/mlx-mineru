@@ -72,15 +72,20 @@ lm = [v for k, v in inits.items() if v.shape == (D_MODEL, VOCAB)]
 assert len(lm) == 1, f"expected 1 lm_head, got {len(lm)}"
 W["lm_head.weight"] = lm[0]  # [768,50000]
 
-# detect embed_scale: is there a Mul by a scalar right after the embed_tokens Gather?
+# detect embed_scale: a Mul by a scalar right after the embed_tokens Gather. The scalar can be an
+# initializer OR a Constant node (mBART scale_embedding -> sqrt(d_model)); resolve both.
+const_vals = {n.output[0]: numpy_helper.to_array(a.t)
+              for n in g.node if n.op_type == "Constant" for a in n.attribute if a.name == "value"}
 embed_scale = 1.0
 for n in g.node:
     if n.op_type == "Gather" and f"{P}.embed_tokens.weight" in n.input:
-        for c in g.node:
-            if c.op_type == "Mul" and n.output[0] in c.input:
-                other = [i for i in c.input if i != n.output[0]]
-                if other and other[0] in inits:
-                    embed_scale = float(np.array(inits[other[0]]).reshape(-1)[0])
+        for cn in g.node:
+            if cn.op_type == "Mul" and n.output[0] in cn.input:
+                other = [i for i in cn.input if i != n.output[0]]
+                src = inits.get(other[0]) if other and other[0] in inits else \
+                      (const_vals.get(other[0]) if other else None)
+                if src is not None:
+                    embed_scale = float(np.array(src).reshape(-1)[0])
 print(f"[extract] {len(W)} tensors | embed_scale={embed_scale}")
 for k in ["embed_tokens.weight", "layers.0.self_attn.q_proj.weight",
           "layers.0.self_attn.v_proj.weight", "lm_head.weight"]:

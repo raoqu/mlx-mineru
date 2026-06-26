@@ -383,6 +383,17 @@ if(HAVE_MLX)
   set_target_properties(test_mlx_smoke PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
   add_test(NAME mlx_smoke COMMAND test_mlx_smoke)
 
+  # ---- MFR MLX decoder validation (vs ONNX reference) -----------------------
+  if(EXISTS ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_decoder.safetensors)
+    add_executable(test_mfr_mlx tests/test_mfr_mlx.cpp src/pipeline/mfr_mlx_decoder.cpp)
+    target_include_directories(test_mfr_mlx PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(test_mfr_mlx PRIVATE mlx thirdparty_headers)
+    set_target_properties(test_mfr_mlx PROPERTIES BUILD_RPATH ${MLX_LIB_DIR})
+    add_test(NAME mfr_mlx COMMAND test_mfr_mlx
+             ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_decoder.safetensors
+             ${CMAKE_SOURCE_DIR}/mumodel/pipeline/MFR/mfr_decoder_config.json)
+  endif()
+
   # ---- Qwen2-VL model (MLX) -------------------------------------------------
   add_library(mineru_qwen STATIC src/vlm/qwen2_llm.cpp)
   target_include_directories(mineru_qwen PUBLIC ${CMAKE_SOURCE_DIR}/include)
