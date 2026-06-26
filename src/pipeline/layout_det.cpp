@@ -3,12 +3,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
 
 #include "mineru/image_preprocess.hpp"  // resize_bicubic_rgb8
+#include "mnn_runner.hpp"               // MNN/Metal backbone (split path)
 #include "nlohmann/json.hpp"
 #include "onnxruntime_cxx_api.h"
 
@@ -29,7 +31,10 @@ struct LayoutDetector::Impl {
   std::vector<std::string> id2label;  // index = class id
   Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "mlx-mineru-layout"};
   Ort::SessionOptions opts;
-  std::unique_ptr<Ort::Session> session;
+  std::unique_ptr<Ort::Session> session;        // full model (fallback)
+  std::unique_ptr<MnnRunner> backbone;          // split: conv backbone+encoder on MNN/Metal
+  std::unique_ptr<Ort::Session> decoder;        // split: RT-DETR decoder on ORT
+  bool split = false;
 };
 
 LayoutDetector::LayoutDetector() : impl_(std::make_unique<Impl>()) {}
@@ -52,7 +57,28 @@ LayoutDetector LayoutDetector::load(const std::string& model_dir, float conf) {
                 "seal",          "table",        "text",          "vertical_text",
                 "vision_footnote"};
   m.opts.SetIntraOpNumThreads(0);  // ORT default
-  m.session = std::make_unique<Ort::Session>(m.env, (model_dir + "/layout.onnx").c_str(), m.opts);
+  // Split path: the conv backbone+encoder (61% of the time, Metal-clean) runs on MNN/Metal and the
+  // Metal-hostile RT-DETR decoder (TopK/ScatterND/GridSample deformable attention) on ORT. The
+  // single handoff is the encoder memory [1,13125,256]. scripts/split_layout_onnx.py builds both
+  // (constants baked into the decoder; valid only for the fixed 800x800 input). Falls back to the
+  // full layout.onnx when the split files are absent or the MNN backbone won't load.
+  namespace fsx = std::filesystem;
+  std::error_code ec;
+  std::string bb = model_dir + "/layout_backbone.mnn", dec = model_dir + "/layout_decoder.onnx";
+  if (fsx::exists(bb, ec) && fsx::exists(dec, ec)) {
+    m.backbone = MnnRunner::load(bb, {"pixel_values"}, {"/m/model/Concat_3_output_0"});
+    if (m.backbone) {
+      m.decoder = std::make_unique<Ort::Session>(m.env, dec.c_str(), m.opts);
+      m.split = true;
+      // Warm up: compile the Metal backbone shaders once at load so the first page isn't penalized.
+      std::vector<float> dummy(static_cast<size_t>(3) * kSize * kSize, 0.0f);
+      std::vector<std::vector<float>> o;
+      std::vector<std::vector<int>> s;
+      m.backbone->run(dummy.data(), {1, 3, kSize, kSize}, o, s);
+    }
+  }
+  if (!m.split)
+    m.session = std::make_unique<Ort::Session>(m.env, (model_dir + "/layout.onnx").c_str(), m.opts);
   return d;
 }
 
@@ -67,13 +93,31 @@ std::vector<LayoutBox> LayoutDetector::detect_800(const std::vector<uint8_t>& rg
         input[(static_cast<size_t>(c) * kSize + y) * kSize + x] =
             rgb[(static_cast<size_t>(y) * kSize + x) * 3 + c] / 255.0f;
 
-  std::array<int64_t, 4> ishape{1, 3, kSize, kSize};
   Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-  Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), ishape.data(), 4);
   const char* in_names[] = {"pixel_values"};
   const char* out_names[] = {"logits", "pred_boxes", "order_logits"};
-  auto outs =
-      const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1, out_names, 3);
+  std::vector<Ort::Value> outs;
+  std::vector<float> mem_buf;  // backbone memory (split path; kept alive for the decoder Run)
+  if (m.split) {
+    // MNN/Metal backbone -> encoder memory [1,13125,256] -> ORT decoder.
+    std::vector<std::vector<float>> mo;
+    std::vector<std::vector<int>> ms;
+    if (!const_cast<MnnRunner&>(*m.backbone).run(input.data(), {1, 3, kSize, kSize}, mo, ms) ||
+        mo.empty() || ms[0].size() < 3)
+      throw std::runtime_error("layout: MNN backbone failed");
+    mem_buf = std::move(mo[0]);
+    std::array<int64_t, 3> mshape{ms[0][0], ms[0][1], ms[0][2]};
+    Ort::Value memv =
+        Ort::Value::CreateTensor<float>(mem, mem_buf.data(), mem_buf.size(), mshape.data(), 3);
+    const char* dec_in[] = {"/m/model/Concat_3_output_0"};
+    outs = const_cast<Ort::Session&>(*m.decoder).Run(Ort::RunOptions{nullptr}, dec_in, &memv, 1,
+                                                     out_names, 3);
+  } else {
+    std::array<int64_t, 4> ishape{1, 3, kSize, kSize};
+    Ort::Value in = Ort::Value::CreateTensor<float>(mem, input.data(), input.size(), ishape.data(), 4);
+    outs = const_cast<Ort::Session&>(*m.session).Run(Ort::RunOptions{nullptr}, in_names, &in, 1,
+                                                     out_names, 3);
+  }
 
   const float* logits = outs[0].GetTensorData<float>();      // (1,300,ncl)
   const float* boxes = outs[1].GetTensorData<float>();       // (1,300,4) cx,cy,w,h
