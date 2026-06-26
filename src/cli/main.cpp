@@ -949,7 +949,9 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
       mineru::WiredTableRecognizer* wrec = o.table_enable ? pl->wired_rec.get() : nullptr;
       std::vector<mineru::PipelinePageImage> pages;
       std::vector<std::pair<int, int>> dims;  // (w,h) per page for cropping
-      double t_render = 0, t_detect = 0, t_recog = 0;  // 各阶段累计耗时(秒)
+      // 各阶段累计耗时(秒)。检测阶段按 版面/OCR检测/表格/公式 分别统计。
+      double t_render = 0, t_recog = 0;
+      double t_layout = 0, t_ocrdet = 0, t_table = 0, t_formula = 0;
       json pdf_info = json::array();
       // Process each page to completion (render -> detect -> recognize/assemble) so its full
       // per-stage timing can be printed the moment the page finishes; the cross-page table
@@ -977,7 +979,10 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
         double a_ms = secs(_ta, Clock::now()) * 1000.0;
         pages.push_back(std::move(pg));
         t_render += r_ms / 1000.0;
-        t_detect += (st.layout + st.ocr_det + st.table + st.formula) / 1000.0;
+        t_layout += st.layout / 1000.0;
+        t_ocrdet += st.ocr_det / 1000.0;
+        t_table += st.table / 1000.0;
+        t_formula += st.formula / 1000.0;
         t_recog += a_ms / 1000.0;
         page_time_row(p + 1, e + 1, kCols,
                       {r_ms, st.layout, st.ocr_det, st.table, st.formula, a_ms});
@@ -1021,7 +1026,10 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
       double t_md = secs(_tm, Clock::now());
       out["layout_pdf"] = layout_pdf_b64(pdf_info, pdf_bytes);
       out["timing"] = {{"页面渲染", t_render},
-                       {"版面/检测/表格/公式", t_detect},
+                       {"版面分析", t_layout},
+                       {"OCR 检测", t_ocrdet},
+                       {"表格识别", t_table},
+                       {"公式识别", t_formula},
                        {"文字识别+组装", t_recog},
                        {"图像裁剪", t_crop},
                        {"Markdown 生成", t_md}};
