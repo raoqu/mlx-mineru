@@ -152,29 +152,91 @@ FormulaRecognizer FormulaRecognizer::load(const std::string& encoder_onnx,
   return r;
 }
 
+namespace {
+const bool g_dbg_mfr = [] { const char* e = std::getenv("MINERU_DEBUG_MFR"); return e && *e && *e != '0'; }();
+
+// Run the Swin encoder (MNN/Metal or ORT) on a preprocessed gray map -> hidden state.
+FormulaEncoded run_encoder(const FormulaRecognizer::Impl& m, const std::vector<float>& gray,
+                           int H, int W);
+// Single-formula greedy decode on the ORT KV-cache graph -> token ids.
+std::vector<int> decode_ort(const FormulaRecognizer::Impl& m, const std::vector<float>& hid, int N);
+}  // namespace
+
+// Byte-level decode (skip special tokens): token ids -> LaTeX. Defined after Impl is complete.
+static std::string ids_to_latex(const FormulaRecognizer::Impl& m, const std::vector<int>& ids);
+
 FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray, int H,
                                                  int W) const {
-  const Impl& m = *impl_;
-  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  return decode_batch({run_encoder(*impl_, gray, H, W)}).at(0);
+}
 
-  // [1,3,H,W] with the gray map replicated across channels.
-  std::vector<float> px(static_cast<size_t>(3) * H * W);
+std::vector<FormulaResult> FormulaRecognizer::decode_batch(
+    const std::vector<FormulaEncoded>& encs) const {
+  const Impl& m = *impl_;
+  std::vector<FormulaResult> out(encs.size());
+  if (encs.empty()) return out;
+  auto _t0 = std::chrono::steady_clock::now();
+#ifdef MINERU_HAVE_MLX
+  if (m.mlx_dec) {  // ONE batched GPU decode over all formulas
+    std::vector<std::vector<float>> hids;
+    std::vector<int> Ns;
+    hids.reserve(encs.size());
+    for (const auto& e : encs) { hids.push_back(e.hid); Ns.push_back(e.n); }
+    auto ids = m.mlx_dec->decode(hids, Ns, kMaxNewTokens);
+    long steps = 0;
+    for (size_t i = 0; i < encs.size(); ++i) {
+      out[i].ids = std::move(ids[i]);
+      out[i].latex = ids_to_latex(m, out[i].ids);
+      steps = std::max(steps, (long)out[i].ids.size());
+    }
+    if (g_dbg_mfr) {
+      double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t0).count();
+      std::fprintf(stderr, "[mfr-debug] MLX/Metal batched decode: %zu formula(s), %ld steps, %.1f ms\n",
+                   encs.size(), steps, ms);
+    }
+    return out;
+  }
+#endif
+  for (size_t i = 0; i < encs.size(); ++i) {  // ORT: one formula at a time
+    out[i].ids = decode_ort(m, encs[i].hid, encs[i].n);
+    out[i].latex = ids_to_latex(m, out[i].ids);
+  }
+  if (g_dbg_mfr) {
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t0).count();
+    std::fprintf(stderr, "[mfr-debug] ORT decode: %zu formula(s), %.1f ms\n", encs.size(), ms);
+  }
+  return out;
+}
+
+static std::string ids_to_latex(const FormulaRecognizer::Impl& m, const std::vector<int>& ids) {
+  std::string bytes;
+  for (int id : ids) {
+    if (kSpecialIds.count(id) || id < 0 || id >= (int)m.vocab.size()) continue;
+    for (uint32_t cp : utf8_codepoints(m.vocab[id])) {
+      int b = (cp < m.u2b.size()) ? m.u2b[cp] : -1;
+      if (b >= 0) bytes += static_cast<char>(b);
+    }
+  }
+  return bytes;
+}
+
+namespace {
+FormulaEncoded run_encoder(const FormulaRecognizer::Impl& m, const std::vector<float>& gray,
+                           int H, int W) {
+  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  std::vector<float> px(static_cast<size_t>(3) * H * W);  // [1,3,H,W], gray replicated to 3 ch
   for (int c = 0; c < 3; ++c)
     std::copy(gray.begin(), gray.begin() + static_cast<size_t>(H) * W,
               px.begin() + static_cast<size_t>(c) * H * W);
-  std::vector<float> hid;
-  int N = 0, D = 0;
-  // MINERU_DEBUG_MFR=1: report encoder(Metal) vs decoder(ORT) split per formula.
-  const bool dbg_mfr = [] { const char* e = std::getenv("MINERU_DEBUG_MFR"); return e && *e && *e != '0'; }();
-  auto _t_enc0 = std::chrono::steady_clock::now();
+  FormulaEncoded e;
+  auto _t = std::chrono::steady_clock::now();
   if (m.enc_mnn) {  // MNN/Metal encoder
     std::vector<std::vector<float>> eo;
     std::vector<std::vector<int>> es;
     if (!m.enc_mnn->run(px.data(), {1, 3, H, W}, eo, es) || eo.empty() || es[0].size() < 3)
       throw std::runtime_error("mfr: MNN encoder failed");
-    N = es[0][1];
-    D = es[0][2];
-    hid = std::move(eo[0]);
+    e.n = es[0][1];
+    e.hid = std::move(eo[0]);
   } else {  // ONNX Runtime encoder
     std::array<int64_t, 4> pshape{1, 3, H, W};
     Ort::Value pv = Ort::Value::CreateTensor<float>(mi, px.data(), px.size(), pshape.data(), 4);
@@ -183,27 +245,24 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
     auto enc_outs =
         const_cast<Ort::Session&>(*m.enc).Run(Ort::RunOptions{nullptr}, ein, &pv, 1, eout, 1);
     auto hshape = enc_outs[0].GetTensorTypeAndShapeInfo().GetShape();
-    N = static_cast<int>(hshape[1]);
-    D = static_cast<int>(hshape[2]);
+    e.n = static_cast<int>(hshape[1]);
+    int D = static_cast<int>(hshape[2]);
     const float* hsrc = enc_outs[0].GetTensorData<float>();
-    hid.assign(hsrc, hsrc + static_cast<size_t>(N) * D);
+    e.hid.assign(hsrc, hsrc + static_cast<size_t>(e.n) * D);
   }
-  std::array<int64_t, 3> hidshape{1, N, D};
-  double enc_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t_enc0).count();
-  auto _t_dec0 = std::chrono::steady_clock::now();
+  if (g_dbg_mfr) {
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t).count();
+    std::fprintf(stderr, "[mfr-debug] encoder(%s)=%.1f ms (N=%d)\n", m.enc_mnn ? "MNN/Metal" : "ORT", ms, e.n);
+  }
+  return e;
+}
 
-  FormulaResult res;
-#ifdef MINERU_HAVE_MLX
-  // MLX/Metal decoder (validated byte-identical to the ORT decoder; see test_mfr_mlx).
-  if (m.mlx_dec) {
-    res.ids = m.mlx_dec->decode({hid}, {N}, kMaxNewTokens).at(0);
-  } else
-#endif
-  {  // ---- ORT KV-cache decoder ----
+std::vector<int> decode_ort(const FormulaRecognizer::Impl& m, const std::vector<float>& hid, int N) {
+  Ort::MemoryInfo mi = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  int D = N > 0 ? (int)(hid.size() / N) : 0;
+  std::array<int64_t, 3> hidshape{1, N, D};
   // Greedy decode with a KV cache: the merged decoder graph caches each layer's self-attention
-  // K/V (fed back present->past every step) so a step processes only the new token, instead of
-  // recomputing the whole prefix (O(T) instead of O(T^2)). Cross-attention is recomputed from
-  // encoder_hidden each step (cheap, O(N)). See scripts/export_mfr_onnx.py.
+  // K/V (present->past each step) so a step processes only the new token (O(T) not O(T^2)).
   static const std::vector<std::string> kInNamesS = [] {
     std::vector<std::string> v{"input_ids", "attention_mask", "encoder_hidden_states"};
     for (int i = 0; i < 2 * kDecLayers; ++i) v.push_back("self_past_" + std::to_string(i));
@@ -218,76 +277,51 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
   for (auto& s : kInNamesS) in_names.push_back(s.c_str());
   for (auto& s : kOutNamesS) out_names.push_back(s.c_str());
 
-  // Cache tensors, fed as self_past_* and replaced by self_present_* each step. Start empty
-  // (self-attn sequence length 0) so the first call is the prefill.
   std::vector<Ort::Value> cache;
   cache.reserve(2 * kDecLayers);
-  std::vector<std::vector<float>> empty(2 * kDecLayers);  // backs the seq-0 prefill tensors
+  std::vector<std::vector<float>> empty(2 * kDecLayers);
   for (int i = 0; i < 2 * kDecLayers; ++i) {
     int64_t dim = (i % 2 == 0) ? kKeyDim : kValDim;
     std::array<int64_t, 4> sh{1, kHeads, 0, dim};
     cache.push_back(Ort::Value::CreateTensor<float>(mi, empty[i].data(), 0, sh.data(), 4));
   }
-
+  std::vector<int> ids;
   int64_t cur = kBOS;
   for (int step = 0; step < kMaxNewTokens; ++step) {
     int64_t id_val = cur;
     std::array<int64_t, 2> ishape{1, 1};
-    std::vector<int64_t> mask(step + 1, 1);  // attention over all tokens so far (length = step+1)
+    std::vector<int64_t> mask(step + 1, 1);
     std::array<int64_t, 2> mshape{1, step + 1};
-
     std::vector<Ort::Value> inputs;
     inputs.reserve(3 + 2 * kDecLayers);
     inputs.push_back(Ort::Value::CreateTensor<int64_t>(mi, &id_val, 1, ishape.data(), 2));
     inputs.push_back(Ort::Value::CreateTensor<int64_t>(mi, mask.data(), mask.size(), mshape.data(), 2));
-    inputs.push_back(Ort::Value::CreateTensor<float>(mi, hid.data(), hid.size(), hidshape.data(), 3));
-    for (auto& c : cache) inputs.push_back(std::move(c));  // self_past_* (consumed this step)
-
+    inputs.push_back(Ort::Value::CreateTensor<float>(mi, const_cast<float*>(hid.data()), hid.size(), hidshape.data(), 3));
+    for (auto& c : cache) inputs.push_back(std::move(c));
     auto outs = const_cast<Ort::Session&>(*m.dec).Run(
         Ort::RunOptions{nullptr}, in_names.data(), inputs.data(), inputs.size(), out_names.data(),
         out_names.size());
-
-    auto oshape = outs[0].GetTensorTypeAndShapeInfo().GetShape();
-    int V = static_cast<int>(oshape.back());  // logits [1,1,V]
+    int V = static_cast<int>(outs[0].GetTensorTypeAndShapeInfo().GetShape().back());
     const float* logits = outs[0].GetTensorData<float>();
     int best = 0;
     float bv = logits[0];
     for (int v = 1; v < V; ++v)
       if (logits[v] > bv) { bv = logits[v]; best = v; }
-    res.ids.push_back(best);
+    ids.push_back(best);
     if (best == kEOS) break;
     cur = best;
-    cache.clear();  // present -> past for the next step (no copy; reuse ORT-owned buffers)
+    cache.clear();
     for (int i = 0; i < 2 * kDecLayers; ++i) cache.push_back(std::move(outs[1 + i]));
   }
-  }  // end ORT decoder branch
-
-  if (dbg_mfr) {
-    double dec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t_dec0).count();
-    const char* dec_eng = "ORT";
-#ifdef MINERU_HAVE_MLX
-    if (m.mlx_dec) dec_eng = "MLX/Metal";
-#endif
-    std::fprintf(stderr, "[mfr-debug] encoder(%s)=%.1f ms | decoder(%s, %d steps)=%.1f ms\n",
-                 m.enc_mnn ? "MNN/Metal" : "ORT", enc_ms, dec_eng, (int)res.ids.size(), dec_ms);
-  }
-  // Byte-level decode (skip special tokens).
-  std::string bytes;
-  for (int id : res.ids) {
-    if (kSpecialIds.count(id) || id < 0 || id >= (int)m.vocab.size()) continue;
-    for (uint32_t cp : utf8_codepoints(m.vocab[id])) {
-      int b = (cp < m.u2b.size()) ? m.u2b[cp] : -1;
-      if (b >= 0) bytes += static_cast<char>(b);
-    }
-  }
-  res.latex = bytes;
-  return res;
+  return ids;
 }
+}  // namespace
 
-FormulaResult FormulaRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int h) const {
+// UniMERNet preprocess (crop-margin -> aspect resize -> center pad -> gray normalize) -> the
+// [kTargetH*kTargetW] gray map the encoder consumes. Empty when built without OpenCV.
+static std::vector<float> preprocess_to_gray(const std::vector<uint8_t>& rgb, int w, int h) {
 #ifdef MINERU_HAVE_OPENCV
-  // Faithful UniMERNet preprocess via real cv2 (crop_margin_numpy -> aspect resize ->
-  // center pad -> gray normalize), so it matches MinerU byte-for-byte.
+  // Faithful UniMERNet preprocess via real cv2, so it matches MinerU byte-for-byte.
   cv::Mat img(h, w, CV_8UC3, const_cast<uint8_t*>(rgb.data()));  // RGB
   // crop_margin_numpy: gray, min-max stretch, threshold <200, boundingRect of content.
   cv::Mat gray;
@@ -326,11 +360,23 @@ FormulaResult FormulaRecognizer::recognize(const std::vector<uint8_t>& rgb, int 
   for (int y = 0; y < kTargetH; ++y)
     for (int x = 0; x < kTargetW; ++x)
       px[(size_t)y * kTargetW + x] = (pg.at<uint8_t>(y, x) - 0.7931f * 255.0f) / (0.1738f * 255.0f);
-  return recognize_pixel(px, kTargetH, kTargetW);
+  return px;
 #else
   (void)rgb; (void)w; (void)h;
   return {};
 #endif
+}
+
+FormulaResult FormulaRecognizer::recognize(const std::vector<uint8_t>& rgb, int w, int h) const {
+  std::vector<float> px = preprocess_to_gray(rgb, w, h);
+  if (px.empty()) return {};
+  return recognize_pixel(px, kTargetH, kTargetW);
+}
+
+FormulaEncoded FormulaRecognizer::encode(const std::vector<uint8_t>& rgb, int w, int h) const {
+  std::vector<float> px = preprocess_to_gray(rgb, w, h);
+  if (px.empty()) return {};
+  return run_encoder(*impl_, px, kTargetH, kTargetW);
 }
 
 }  // namespace mineru

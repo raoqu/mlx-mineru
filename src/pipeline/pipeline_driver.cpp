@@ -149,6 +149,11 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
     return std::chrono::duration<double, std::milli>(b - a).count();
   };
   nlohmann::json dets = nlohmann::json::array();
+  // Formula regions are encoded inline but DECODED together after the layout loop, so the whole
+  // page's formulas run through the decoder in one batched MLX/Metal pass (B>1) instead of one
+  // sequential decode each.
+  std::vector<FormulaEncoded> f_encs;
+  std::vector<size_t> f_idx;  // index into `dets` of each collected formula
   // Region boxes (reading-order index already assigned by the detector).
   auto _t0 = Clk::now();
   std::vector<LayoutBox> boxes = layout.detect(rgb, w, h);
@@ -160,8 +165,12 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
       auto _tf = Clk::now();
       int cw, ch;
       std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
-      d["latex"] = (cw > 0 && ch > 0) ? mfr->recognize(crop, cw, ch).latex : std::string();
-      if (times) times->formula += ms(_tf, Clk::now());
+      d["latex"] = "";  // filled by the batched decode after the loop
+      if (cw > 0 && ch > 0) {
+        f_idx.push_back(dets.size());  // this det's index once pushed below
+        f_encs.push_back(mfr->encode(crop, cw, ch));
+      }
+      if (times) times->formula += ms(_tf, Clk::now());  // encode only; decode timed below
     } else if (ocr && table_rec && b.label == "table") {
       auto _tt = Clk::now();
       int cw, ch;
@@ -205,6 +214,14 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
       if (times) times->table += ms(_tt, Clk::now());
     }
     dets.push_back(std::move(d));
+  }
+  // Batched formula decode: all of the page's formulas in one decoder pass.
+  if (mfr && !f_encs.empty()) {
+    auto _tf = Clk::now();
+    std::vector<FormulaResult> frs = mfr->decode_batch(f_encs);
+    for (size_t i = 0; i < f_idx.size() && i < frs.size(); ++i)
+      dets[f_idx[i]]["latex"] = frs[i].latex;
+    if (times) times->formula += ms(_tf, Clk::now());
   }
   // OCR text-line boxes -> ocr_text dets (axis-aligned bbox, empty text).
   auto _td = Clk::now();
