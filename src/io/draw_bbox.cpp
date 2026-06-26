@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "fpdf_edit.h"
+#include "fpdf_ppo.h"   // FPDF_NewXObjectFromPage / FPDF_NewFormObjectFromXObject
 #include "fpdf_save.h"
 #include "fpdfview.h"
 #include "mineru/pdf.hpp"
@@ -64,26 +65,14 @@ void add_rect(FPDF_PAGE page, const json& bbox, double page_h, RGB c, bool fill)
   FPDF_PAGEOBJECT r = FPDFPageObj_CreateNewRect((float)x0, (float)(page_h - y1), (float)(x1 - x0),
                                                 (float)(y1 - y0));
   if (fill) {
-    // Highlight: a SOLID color pre-blended as 0.3-over-white, inserted BENEATH the page content
-    // (index 0) so the text renders on top — the same look as a 0.3 alpha fill, but with NO
-    // per-object alpha. We previously used FPDFPageObj_SetFillColor(...,77); pdfium emits that
-    // alpha as a named ExtGState added to the page, and on PDFs whose pages already define
-    // ExtGStates it writes a content stream referencing a name (e.g. /FXE4) that it never
-    // registers in the page's /ExtGState dict — so viewers drop the alpha and the fill renders
-    // OPAQUE, hiding the text. A solid color needs no ExtGState, so it is reliable in every
-    // viewer and every source PDF; drawing it underneath keeps the text legible.
-    auto blend = [](unsigned int v) -> unsigned int {
-      return (unsigned int)(0.3 * v + 0.7 * 255 + 0.5);
-    };
-    FPDFPageObj_SetFillColor(r, blend(c.r), blend(c.g), blend(c.b), 255);
+    FPDFPageObj_SetFillColor(r, c.r, c.g, c.b, 77);  // 0.3 * 255
     FPDFPath_SetDrawMode(r, FPDF_FILLMODE_WINDING, 0);
-    FPDFPage_InsertObjectAtIndex(page, r, 0);  // beneath the original page content
   } else {
     FPDFPageObj_SetStrokeColor(r, c.r, c.g, c.b, 255);
     FPDFPageObj_SetStrokeWidth(r, 1.0f);
     FPDFPath_SetDrawMode(r, 0, 1);
-    FPDFPage_InsertObject(page, r);  // outline on top
   }
+  FPDFPage_InsertObject(page, r);
 }
 
 void add_number(FPDF_DOCUMENT doc, FPDF_PAGE page, const json& bbox, double page_h, int n) {
@@ -103,15 +92,30 @@ void add_number(FPDF_DOCUMENT doc, FPDF_PAGE page, const json& bbox, double page
 
 std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<uint8_t>& pdf_bytes) {
   pdfium_acquire();
-  FPDF_DOCUMENT doc = FPDF_LoadMemDocument(pdf_bytes.data(), (int)pdf_bytes.size(), nullptr);
-  if (!doc) { pdfium_release(); return {}; }
-
+  FPDF_DOCUMENT src = FPDF_LoadMemDocument(pdf_bytes.data(), (int)pdf_bytes.size(), nullptr);
+  if (!src) { pdfium_release(); return {}; }
+  // Build the overlay on FRESH pages instead of editing the source in place. Editing in place and
+  // regenerating content makes pdfium emit our translucent-fill ExtGState (/ca 0.3) under a name
+  // (/FXE3,/FXE4) it never registers in the page's /ExtGState dict whenever the source page
+  // already defines ExtGStates (e.g. TikZ/pgf PDFs carry /pgf@ca1.0) — viewers then drop the
+  // alpha and the box renders OPAQUE, hiding the content. A brand-new page has clean resources, so
+  // the names match and the alpha is honored. The original page is placed as a Form XObject at the
+  // bottom; our boxes/numbers draw on top (so the fill correctly tints text AND images).
+  FPDF_DOCUMENT doc = FPDF_CreateNewDocument();
+  std::vector<FPDF_PAGE> pages;     // kept loaded until after save
+  std::vector<FPDF_XOBJECT> xobjs;  // closed after save
   for (size_t i = 0; i < pdf_info.size(); ++i) {
     const json& pinfo = pdf_info[i];
     int page_idx = pinfo.value("page_idx", (int)i);
-    FPDF_PAGE page = FPDF_LoadPage(doc, page_idx);
-    if (!page) continue;
-    double page_h = FPDF_GetPageHeightF(page);
+    FPDF_PAGE spage = FPDF_LoadPage(src, page_idx);
+    if (!spage) continue;
+    double page_w = FPDF_GetPageWidthF(spage), page_h = FPDF_GetPageHeightF(spage);
+    FPDF_ClosePage(spage);
+    FPDF_PAGE page = FPDFPage_New(doc, (int)pages.size(), page_w, page_h);
+    if (FPDF_XOBJECT xo = FPDF_NewXObjectFromPage(doc, src, page_idx)) {
+      FPDFPage_InsertObject(page, FPDF_NewFormObjectFromXObject(xo));  // original page, at bottom
+      xobjs.push_back(xo);
+    }
 
     // Per-category fills in MinerU's draw order; list_items are stroked. (r,g,b,fill)
     struct Item { json bbox; RGB c; bool fill; };
@@ -154,14 +158,11 @@ std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<uin
       }
     }
     // Draw order faithful to draw_layout_bbox (codes omitted — pipeline has none here).
-    // Text-ish regions get a translucent highlight (drawn beneath the text by add_rect); the
-    // image/chart/table BODIES are outlined on top instead — a behind-highlight would be hidden
-    // by the opaque figure/image anyway, so an outline marks them without obscuring the content.
     for (auto& b : dropped) push_cat(b, {158, 158, 158}, true);
-    for (auto& b : tb) push_cat(b, {204, 204, 0}, /*fill=*/false);
+    for (auto& b : tb) push_cat(b, {204, 204, 0}, true);
     for (auto& b : tcap) push_cat(b, {255, 255, 102}, true);
     for (auto& b : tfoot) push_cat(b, {229, 255, 204}, true);
-    for (auto& b : ib) push_cat(b, {153, 255, 51}, /*fill=*/false);
+    for (auto& b : ib) push_cat(b, {153, 255, 51}, true);
     for (auto& b : icap) push_cat(b, {102, 178, 255}, true);
     for (auto& b : ifoot) push_cat(b, {255, 178, 102}, true);
     for (auto& b : titles) push_cat(b, {102, 102, 255}, true);
@@ -210,11 +211,14 @@ std::vector<uint8_t> draw_layout_pdf(const json& pdf_info, const std::vector<uin
     for (size_t k = 0; k < numbered.size(); ++k) add_number(doc, page, numbered[k], page_h, (int)k + 1);
 
     FPDFPage_GenerateContent(page);
-    FPDF_ClosePage(page);
+    pages.push_back(page);  // keep loaded until after save
   }
 
   std::vector<uint8_t> out = save_doc(doc);
+  for (FPDF_PAGE p : pages) FPDF_ClosePage(p);
+  for (FPDF_XOBJECT x : xobjs) FPDF_CloseXObject(x);
   FPDF_CloseDocument(doc);
+  FPDF_CloseDocument(src);
   pdfium_release();
   return out;
 }
@@ -224,6 +228,7 @@ std::vector<uint8_t> draw_span_pdf(const json& pdf_info, const std::vector<uint8
   FPDF_DOCUMENT doc = FPDF_LoadMemDocument(pdf_bytes.data(), (int)pdf_bytes.size(), nullptr);
   if (!doc) { pdfium_release(); return {}; }
 
+  std::vector<FPDF_PAGE> pages;  // kept loaded until after save to avoid a 2nd content pass
   for (size_t i = 0; i < pdf_info.size(); ++i) {
     const json& pinfo = pdf_info[i];
     int page_idx = pinfo.value("page_idx", (int)i);
@@ -259,10 +264,11 @@ std::vector<uint8_t> draw_span_pdf(const json& pdf_info, const std::vector<uint8
         walk(block);
     }
     FPDFPage_GenerateContent(page);
-    FPDF_ClosePage(page);
+    pages.push_back(page);
   }
 
-  std::vector<uint8_t> out = save_doc(doc);
+  std::vector<uint8_t> out = save_doc(doc);  // save before closing (see draw_layout_pdf note)
+  for (FPDF_PAGE p : pages) FPDF_ClosePage(p);
   FPDF_CloseDocument(doc);
   pdfium_release();
   return out;
