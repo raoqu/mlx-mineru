@@ -1056,8 +1056,9 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
   engines.push_back({{"name", "VLM (Qwen2-VL, 1.2B)"}, {"engine", "MLX / Metal"}});
 #ifdef MINERU_HAVE_PIPELINE
   if (have_pl) {
+    // MNN models run on the backend selected by MINERU_MNN_BACKEND (default Metal).
     auto eng = [&](const char* rel) {
-      return fsx::exists(pl_models + "/" + rel) ? "MNN" : "ONNX Runtime";
+      return fsx::exists(pl_models + "/" + rel) ? "MNN / Metal" : "ONNX Runtime";
     };
     engines.push_back({{"name", "版面 Layout (PP-DocLayoutV2)"}, {"engine", "ONNX Runtime"}});
     engines.push_back({{"name", "OCR 检测 (DBNet)"}, {"engine", eng("OCR/ocr_det.mnn")}});
@@ -1066,7 +1067,12 @@ static int run_multi_backend_server(bool serve_ui, const std::string& host, int 
                        {"engine", eng("TabCls/PP-LCNet_x1_0_table_cls.mnn")}});
     engines.push_back({{"name", "有线表格 (UNet)"}, {"engine", eng("TabRec/UnetStructure/unet.mnn")}});
     engines.push_back({{"name", "无线表格 (SLANet+)"}, {"engine", "ONNX Runtime"}});
-    engines.push_back({{"name", "公式 (UniMERNet)"}, {"engine", "ONNX Runtime"}});
+    // Formula: Swin encoder on MNN/Metal, mBART decoder on the MLX/Metal batched decoder when its
+    // weights are present (else ORT) — see src/pipeline/mfr_mlx_decoder.cpp.
+    engines.push_back({{"name", "公式编码 (UniMERNet Swin)"}, {"engine", eng("MFR/mfr_encoder.mnn")}});
+    engines.push_back({{"name", "公式解码 (mBART)"},
+                       {"engine", fsx::exists(pl_models + "/MFR/mfr_decoder.safetensors")
+                                      ? "MLX / Metal" : "ONNX Runtime"}});
   }
 #endif
   return run_web_server(convert, backends, default_backend, engines, host, port, serve_ui);

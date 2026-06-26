@@ -38,17 +38,16 @@ MNNForwardType requested_backend() {
 
 std::shared_ptr<Module> load_on(MNNForwardType fwd, const std::string& mnn_path,
                                 const std::vector<std::string>& in,
-                                const std::vector<std::string>& out,
+                                const std::vector<std::string>& out, bool fp16,
                                 std::shared_ptr<Executor::RuntimeManager>& rtmgr_out) {
   MNN::ScheduleConfig sc;
   sc.type = fwd;
   sc.numThread = 4;
   MNN::BackendConfig bc;
-  // fp32 everywhere (Precision_High): on Metal this keeps near-exact parity with the CPU/ONNX
-  // baseline (max|Δ| ~1e-5..1e-4, golden-passing) while still giving large GPU speedups; the
-  // fp16 path (Precision_Normal) is only marginally faster but drifts enough to fail the strict
-  // table_cls golden, so it is not used.
-  bc.precision = MNN::BackendConfig::Precision_High;
+  // Default fp32 (Precision_High): near-exact parity with CPU/ONNX (golden-passing) and required
+  // by the strict table_cls prob tolerance. fp16 (Precision_Normal) is opt-in per model (caller's
+  // `fp16`): ~15-25% faster on Metal, safe for argmax/CTC outputs (ocr_det/ocr_rec, golden-verified).
+  bc.precision = fp16 ? MNN::BackendConfig::Precision_Normal : MNN::BackendConfig::Precision_High;
   bc.power = MNN::BackendConfig::Power_High;
   sc.backendConfig = &bc;
   std::shared_ptr<Executor::RuntimeManager> rtmgr(
@@ -105,6 +104,7 @@ struct MnnRunner::Impl {
   std::vector<std::string> out_names;
   std::string path;
   MNNForwardType backend = MNN_FORWARD_CPU;
+  bool fp16 = false;       // Precision_Normal (half) requested at load
   bool fell_back = false;  // already rebuilt on CPU after a non-CPU failure?
 };
 
@@ -113,13 +113,14 @@ MnnRunner::~MnnRunner() = default;
 
 std::unique_ptr<MnnRunner> MnnRunner::load(const std::string& mnn_path,
                                            const std::vector<std::string>& input_names,
-                                           const std::vector<std::string>& output_names) {
+                                           const std::vector<std::string>& output_names,
+                                           bool fp16) {
   MNNForwardType fwd = requested_backend();
   std::shared_ptr<Executor::RuntimeManager> rtmgr;
-  std::shared_ptr<Module> net = load_on(fwd, mnn_path, input_names, output_names, rtmgr);
+  std::shared_ptr<Module> net = load_on(fwd, mnn_path, input_names, output_names, fp16, rtmgr);
   if (!net && fwd != MNN_FORWARD_CPU) {  // backend unavailable/load failed -> CPU fallback
     fwd = MNN_FORWARD_CPU;
-    net = load_on(fwd, mnn_path, input_names, output_names, rtmgr);
+    net = load_on(fwd, mnn_path, input_names, output_names, fp16, rtmgr);
   }
   if (!net) return nullptr;
   std::unique_ptr<MnnRunner> r(new MnnRunner());
@@ -129,6 +130,7 @@ std::unique_ptr<MnnRunner> MnnRunner::load(const std::string& mnn_path,
   r->impl_->out_names = output_names;
   r->impl_->path = mnn_path;
   r->impl_->backend = fwd;
+  r->impl_->fp16 = fp16;
   r->impl_->fell_back = (fwd == MNN_FORWARD_CPU);
   return r;
 }
@@ -144,8 +146,8 @@ bool MnnRunner::run(const float* input, const std::array<int, 4>& nchw,
     // The chosen GPU/ANE backend could not execute this model (e.g. CoreML op gap surfaces only
     // at first forward) — rebuild on CPU once and retry, so the model still runs.
     std::shared_ptr<Executor::RuntimeManager> rtmgr;
-    std::shared_ptr<Module> net =
-        load_on(MNN_FORWARD_CPU, impl_->path, impl_->in_names, impl_->out_names, rtmgr);
+    std::shared_ptr<Module> net = load_on(MNN_FORWARD_CPU, impl_->path, impl_->in_names,
+                                          impl_->out_names, impl_->fp16, rtmgr);
     if (net) {
       impl_->rtmgr = rtmgr;
       impl_->net = net;

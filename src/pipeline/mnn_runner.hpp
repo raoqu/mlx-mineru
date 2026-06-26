@@ -16,10 +16,13 @@ namespace mineru {
 class MnnRunner {
  public:
   // Load a `.mnn` model with the given input/output tensor names (Module API needs them).
-  // Returns nullptr on any failure.
+  // fp16=true requests Precision_Normal (half) on Metal — ~15-25% faster, safe for argmax/CTC
+  // outputs (ocr_det/ocr_rec, golden-verified) but NOT for the strict table_cls prob tolerance,
+  // so it defaults off (fp32 / Precision_High). Returns nullptr on any failure.
   static std::unique_ptr<MnnRunner> load(const std::string& mnn_path,
                                          const std::vector<std::string>& input_names,
-                                         const std::vector<std::string>& output_names);
+                                         const std::vector<std::string>& output_names,
+                                         bool fp16 = false);
   ~MnnRunner();
 
   // Run a single NCHW float input; fills `outs` (one flattened row-major buffer per requested

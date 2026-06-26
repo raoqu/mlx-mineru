@@ -143,7 +143,9 @@ TextDetector TextDetector::load(const std::string& onnx_path) {
   if (onnx_path.size() > 5 && onnx_path.substr(onnx_path.size() - 5) == ".onnx") {
     std::string mp = onnx_path.substr(0, onnx_path.size() - 5) + ".mnn";
     std::error_code ec;
-    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp, {"x"}, {"/head/Sigmoid_output_0"});
+    // fp16 on Metal (~20-30% faster): the DB prob map is thresholded (0.3), robust to half precision.
+    if (std::filesystem::exists(mp, ec))
+      m.mnn = MnnRunner::load(mp, {"x"}, {"/head/Sigmoid_output_0"}, /*fp16=*/true);
   }
   if (!m.mnn) {
     m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);

@@ -4,7 +4,10 @@
 #include "mineru/ocr.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <numeric>
 
 #include "mineru/image_preprocess.hpp"  // resize_bilinear_rgb8
@@ -224,7 +227,10 @@ OcrPipeline OcrPipeline::load(const std::string& det_onnx, const std::string& re
 
 std::vector<OcrLine> OcrPipeline::run(const std::vector<uint8_t>& rgb, int w, int h,
                                       float drop_score) const {
+  const bool dbg = std::getenv("MINERU_DEBUG_OCR") != nullptr;
+  auto _td = std::chrono::steady_clock::now();
   auto det_boxes = det_.detect(rgb, w, h);
+  double det_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _td).count();
   std::vector<Quad> quads;
   quads.reserve(det_boxes.size());
   for (const auto& db : det_boxes) {
@@ -255,6 +261,7 @@ std::vector<OcrLine> OcrPipeline::run(const std::vector<uint8_t>& rgb, int w, in
   std::iota(idx.begin(), idx.end(), 0);
   std::stable_sort(idx.begin(), idx.end(), [&](int a, int b) { return aspect[a] < aspect[b]; });
   std::vector<RecResult> recs(crops.size());
+  auto _tr = std::chrono::steady_clock::now();
   for (size_t beg = 0; beg < idx.size(); beg += kRecBatch) {
     size_t end = std::min(idx.size(), beg + kRecBatch);
     double max_wh = aspect[idx[end - 1]];
@@ -263,6 +270,11 @@ std::vector<OcrLine> OcrPipeline::run(const std::vector<uint8_t>& rgb, int w, in
       if (crops[j].w <= 0 || crops[j].h <= 0) continue;
       recs[j] = rec_.recognize(crops[j].rgb, crops[j].w, crops[j].h, max_wh);
     }
+  }
+  if (dbg) {
+    double rec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _tr).count();
+    std::fprintf(stderr, "[ocr-debug] det=%.0f ms | rec=%.0f ms (%zu lines) | total %.0f ms\n",
+                 det_ms, rec_ms, crops.size(), det_ms + rec_ms);
   }
 
   std::vector<OcrLine> out;

@@ -48,7 +48,8 @@ TextRecognizer TextRecognizer::load(const std::string& onnx_path, const std::str
   if (onnx_path.size() > 5 && onnx_path.substr(onnx_path.size() - 5) == ".onnx") {
     std::string mp = onnx_path.substr(0, onnx_path.size() - 5) + ".mnn";
     std::error_code ec;
-    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp, {"x"}, {"y"});
+    // fp16 on Metal (~15-25% faster): SVTR output is CTC-argmax, golden-verified at half precision.
+    if (std::filesystem::exists(mp, ec)) m.mnn = MnnRunner::load(mp, {"x"}, {"y"}, /*fp16=*/true);
   }
   if (!m.mnn) {
     m.session = std::make_unique<Ort::Session>(m.env, onnx_path.c_str(), m.opts);
