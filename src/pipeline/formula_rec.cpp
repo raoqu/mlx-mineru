@@ -120,35 +120,41 @@ FormulaRecognizer FormulaRecognizer::load(const std::string& encoder_onnx,
     }
     m.vocab.push_back(tok);
   }
-  m.enc = std::make_unique<Ort::Session>(m.env, encoder_onnx.c_str(), m.opts);
-  m.dec = std::make_unique<Ort::Session>(m.env, decoder_onnx.c_str(), m.opts);
-  Ort::AllocatorWithDefaultOptions alloc;
-  m.enc_in = m.enc->GetInputNameAllocated(0, alloc).get();
-  m.enc_out = m.enc->GetOutputNameAllocated(0, alloc).get();
-  // The decoder uses the fixed KV-cache I/O names from export_mfr_onnx.py (input_ids,
-  // attention_mask, encoder_hidden_states, self_past_*/self_present_*) — no lookup needed.
-  //
-  // Prefer a `<encoder>.mnn` sibling (Metal-accelerated Swin encoder, ~6.5x; comparable on CPU),
-  // falling back to ORT if it's missing or fails to load. The decoder always runs on ORT (the
-  // KV cache already makes it fast and backend-independent).
+  std::error_code ec;
+  // Encoder: prefer the `<encoder>.mnn` sibling (Metal-accelerated Swin, ~6.5x). Its I/O names are
+  // fixed (export_mfr_onnx.py: pixel_values -> encoder_hidden), so we can load MNN WITHOUT first
+  // creating the ORT session. Only build the ORT encoder as a fallback when the .mnn is absent or
+  // fails — that avoids loading the ~235MB encoder .onnx whenever the .mnn is in use.
+  m.enc_in = "pixel_values";
+  m.enc_out = "encoder_hidden";
   if (encoder_onnx.size() > 5 && encoder_onnx.substr(encoder_onnx.size() - 5) == ".onnx") {
     std::string mp = encoder_onnx.substr(0, encoder_onnx.size() - 5) + ".mnn";
-    std::error_code ec;
     if (std::filesystem::exists(mp, ec)) m.enc_mnn = MnnRunner::load(mp, {m.enc_in}, {m.enc_out});
   }
+  if (!m.enc_mnn) {  // fallback: ORT encoder
+    m.enc = std::make_unique<Ort::Session>(m.env, encoder_onnx.c_str(), m.opts);
+    Ort::AllocatorWithDefaultOptions alloc;
+    m.enc_in = m.enc->GetInputNameAllocated(0, alloc).get();
+    m.enc_out = m.enc->GetOutputNameAllocated(0, alloc).get();
+  }
 #ifdef MINERU_HAVE_MLX
-  // Prefer the MLX/Metal decoder when its weights sit next to the .onnx (mfr_decoder.safetensors
-  // + mfr_decoder_config.json from scripts/extract_mfr_decoder_weights.py). Validated byte-
-  // identical to the ORT decoder; opt out with MINERU_MFR_MLX=0. Falls back to ORT on load failure.
+  // Decoder: prefer the MLX/Metal decoder (mfr_decoder.safetensors + _config.json from
+  // scripts/extract_mfr_decoder_weights.py; byte-identical to ORT, opt out with MINERU_MFR_MLX=0).
   const char* mlx_off = std::getenv("MINERU_MFR_MLX");
   if (!(mlx_off && std::string(mlx_off) == "0") &&
       decoder_onnx.size() > 5 && decoder_onnx.substr(decoder_onnx.size() - 5) == ".onnx") {
     std::string base = decoder_onnx.substr(0, decoder_onnx.size() - 5);
-    std::error_code ec;
     if (std::filesystem::exists(base + ".safetensors", ec))
       m.mlx_dec = MfrMlxDecoder::load(base + ".safetensors", base + "_config.json");
   }
 #endif
+  // ORT decoder: only as the fallback when the MLX decoder isn't in use (avoids loading the
+  // ~577MB merged KV-cache .onnx whenever MLX runs). Uses the fixed KV-cache I/O names.
+  bool have_mlx = false;
+#ifdef MINERU_HAVE_MLX
+  have_mlx = (m.mlx_dec != nullptr);
+#endif
+  if (!have_mlx) m.dec = std::make_unique<Ort::Session>(m.env, decoder_onnx.c_str(), m.opts);
   return r;
 }
 
