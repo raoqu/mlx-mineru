@@ -12,9 +12,10 @@
 # MFR: the Swin ENCODER is a Metal win (~6.5x; ~235MB .mnn), gated behind WITH_MFR=1. Its `.onnx`
 # MUST stay (CPU/fallback). The mBART DECODER is NOT converted to MNN: it runs on ORT with a
 # KV cache (mfr_decoder.onnx is the merged KV-cache graph from export_mfr_onnx.py, ~3.7x, backend-
-# independent) — faster than the old MNN no-cache path and works on CPU. layout (RT-DETR: reading-
-# order While/CumSum diverges, golden fails) and slanet (MNN Concat.36 shape bug) CANNOT run on
-# MNN — they stay ORT.
+# independent) — faster than the old MNN no-cache path and works on CPU. slanet (MNN Concat.36 shape
+# bug) stays ORT. layout (RT-DETR) can't run whole on MNN (decoder's TopK/ScatterND/GridSample
+# diverge), so it's split separately by scripts/split_layout_onnx.py (conv backbone -> MNN/Metal,
+# decoder -> ORT) — NOT handled here.
 #
 # Needs pip `mnnconvert` (pip install MNN). Usage: ./scripts/convert_pipeline_mnn.sh
 #   WITH_MFR=1 ./scripts/convert_pipeline_mnn.sh   # also (re)generate the MFR encoder .mnn

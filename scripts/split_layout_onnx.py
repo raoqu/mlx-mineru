@@ -12,9 +12,10 @@ import onnx, onnx.helper as H, onnx.numpy_helper as NP
 import numpy as np, onnxruntime as ort
 from collections import Counter, deque
 
-SRC = "mumodel/pipeline/Layout/layout.onnx"
-BB = "mumodel/pipeline/Layout/layout_backbone.onnx"
-DEC = "mumodel/pipeline/Layout/layout_decoder.onnx"
+SRC = "mumodel/pipeline/Layout/layout.onnx"        # full model (shipped baseline / fallback + source)
+BB = "orgmodel/pipeline/Layout/layout_backbone.onnx"  # mnnconvert INTERMEDIATE (archived, not loaded)
+BB_MNN = "mumodel/pipeline/Layout/layout_backbone.mnn"  # runtime (MNN/Metal backbone)
+DEC = "mumodel/pipeline/Layout/layout_decoder.onnx"     # runtime (ORT decoder)
 FINAL = ["logits", "pred_boxes", "order_logits"]
 DIV = {"TopK", "CumSum", "ScatterND", "NonZero", "GridSample"}
 
@@ -41,7 +42,9 @@ def reachable(targets, stop=frozenset()):
     keep = {id(x) for x in nodes}
     return [n for n in g.node if id(n) in keep], used_init
 
+import os
 def build(path, name, nodes, used_init, ins, outs, extra_init=()):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     gg = H.make_graph(nodes, name, ins, outs, [init_map[i] for i in used_init] + list(extra_init))
     mm = H.make_model(gg, opset_imports=m.opset_import); mm.ir_version = m.ir_version
     onnx.save(mm, path, save_as_external_data=False)
@@ -99,12 +102,12 @@ for nm, a, b in zip(FINAL, full, two):
     print(f"  {nm}: max|Δ|={np.abs(a-b).max():.3g}")
 print("HANDOFF_TENSOR =", MEM, "shape", mem.shape)
 
-# convert the Metal-clean backbone to MNN (decoder stays ORT)
+# convert the Metal-clean backbone (orgmodel intermediate) -> runtime MNN in mumodel.
 import subprocess, shutil
 if shutil.which("mnnconvert"):
     r = subprocess.run(["mnnconvert", "-f", "ONNX", "--modelFile", BB,
-                        "--MNNModel", BB[:-5] + ".mnn", "--bizCode", "mnn"],
-                       capture_output=True, text=True)
-    print("mnnconvert:", "OK" if r.returncode == 0 and "Success" in r.stdout else r.stderr[-300:])
+                        "--MNNModel", BB_MNN, "--bizCode", "mnn"], capture_output=True, text=True)
+    print("mnnconvert:", "OK -> " + BB_MNN if r.returncode == 0 and "Success" in r.stdout else r.stderr[-300:])
 else:
-    print("mnnconvert not found — run it manually on", BB)
+    print("mnnconvert not found — run it manually:", BB, "->", BB_MNN)
+print(f"layout split: runtime={DEC} + {BB_MNN} (mumodel); intermediate={BB} (orgmodel)")
