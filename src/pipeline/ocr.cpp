@@ -264,12 +264,17 @@ std::vector<OcrLine> OcrPipeline::run(const std::vector<uint8_t>& rgb, int w, in
   auto _tr = std::chrono::steady_clock::now();
   for (size_t beg = 0; beg < idx.size(); beg += kRecBatch) {
     size_t end = std::min(idx.size(), beg + kRecBatch);
-    double max_wh = aspect[idx[end - 1]];
+    double max_wh = aspect[idx[end - 1]];  // widest aspect in this group
+    std::vector<const std::vector<uint8_t>*> rgbs;
+    std::vector<int> ws, hs;
     for (size_t ino = beg; ino < end; ++ino) {
       int j = idx[ino];
-      if (crops[j].w <= 0 || crops[j].h <= 0) continue;
-      recs[j] = rec_.recognize(crops[j].rgb, crops[j].w, crops[j].h, max_wh);
+      rgbs.push_back(&crops[j].rgb);
+      ws.push_back(crops[j].w);
+      hs.push_back(crops[j].h);
     }
+    std::vector<RecResult> br = rec_.recognize_batch(rgbs, ws, hs, max_wh);
+    for (size_t ino = beg, k = 0; ino < end; ++ino, ++k) recs[idx[ino]] = std::move(br[k]);
   }
   if (dbg) {
     double rec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _tr).count();

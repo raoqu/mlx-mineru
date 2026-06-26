@@ -29,6 +29,15 @@ class TextRecognizer {
   RecResult recognize(const std::vector<uint8_t>& rgb, int w, int h,
                       double max_wh_override = -1.0) const;
 
+  // Recognize a group of crops in ONE batched forward. The batch is padded to a fixed size and
+  // the width bucketed (rounded up to a multiple of kWbase) so MNN/Metal compiles each shape once
+  // and reuses it — that makes the batch ~2x faster per crop (variable shapes would force a
+  // recompile per group and lose the win). `max_wh` is the group's shared max_wh_ratio. Returns
+  // one RecResult per input crop, in order; degenerate (w/h<=0) crops yield empty.
+  std::vector<RecResult> recognize_batch(const std::vector<const std::vector<uint8_t>*>& rgbs,
+                                         const std::vector<int>& ws, const std::vector<int>& hs,
+                                         double max_wh) const;
+
  private:
   TextRecognizer();
   struct Impl;
