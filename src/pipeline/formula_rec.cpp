@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <set>
 #include <stdexcept>
@@ -142,6 +145,9 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
               px.begin() + static_cast<size_t>(c) * H * W);
   std::vector<float> hid;
   int N = 0, D = 0;
+  // MINERU_DEBUG_MFR=1: report encoder(Metal) vs decoder(ORT) split per formula.
+  const bool dbg_mfr = [] { const char* e = std::getenv("MINERU_DEBUG_MFR"); return e && *e && *e != '0'; }();
+  auto _t_enc0 = std::chrono::steady_clock::now();
   if (m.enc_mnn) {  // MNN/Metal encoder
     std::vector<std::vector<float>> eo;
     std::vector<std::vector<int>> es;
@@ -164,6 +170,8 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
     hid.assign(hsrc, hsrc + static_cast<size_t>(N) * D);
   }
   std::array<int64_t, 3> hidshape{1, N, D};
+  double enc_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t_enc0).count();
+  auto _t_dec0 = std::chrono::steady_clock::now();
 
   // Greedy decode with a KV cache: the merged decoder graph caches each layer's self-attention
   // K/V (fed back present->past every step) so a step processes only the new token, instead of
@@ -227,6 +235,11 @@ FormulaResult FormulaRecognizer::recognize_pixel(const std::vector<float>& gray,
     for (int i = 0; i < 2 * kDecLayers; ++i) cache.push_back(std::move(outs[1 + i]));
   }
 
+  if (dbg_mfr) {
+    double dec_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _t_dec0).count();
+    std::fprintf(stderr, "[mfr-debug] encoder(%s)=%.1f ms | decoder(ORT, %d steps)=%.1f ms\n",
+                 m.enc_mnn ? "MNN/Metal" : "ORT", enc_ms, (int)res.ids.size(), dec_ms);
+  }
   // Byte-level decode (skip special tokens).
   std::string bytes;
   for (int id : res.ids) {

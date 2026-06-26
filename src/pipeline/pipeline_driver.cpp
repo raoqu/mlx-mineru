@@ -7,6 +7,8 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 
 #include "mineru/pipeline_assemble.hpp"
@@ -164,26 +166,41 @@ nlohmann::json build_page_model(const LayoutDetector& layout, const TextDetector
       auto _tt = Clk::now();
       int cw, ch;
       std::vector<uint8_t> crop = crop_rgb(rgb, w, h, b.bbox, cw, ch);
+      // MINERU_DEBUG_TABLE=1: split a table's cost into OCR(Metal) / SLANet(ORT) / cls(Metal) /
+      // UNet(Metal) — to see how much is the un-Metal-able SLANet vs the already-Metal parts.
+      const bool dbg_tbl = std::getenv("MINERU_DEBUG_TABLE") != nullptr;
+      double t_ocr = 0, t_slanet = 0, t_cls = 0, t_unet = 0;
       std::string html;
       if (cw > 0 && ch > 0) {
         std::vector<TableOcrItem> items;
+        auto _o = Clk::now();
         for (const OcrLine& ln : ocr->run(crop, cw, ch))
           items.push_back({ln.box, ln.text, ln.score});
+        t_ocr = ms(_o, Clk::now());
         // Always run SLANet+ (wireless) first; MinerU sets this as the table's HTML.
+        auto _s = Clk::now();
         std::string wireless = strip_table_wrapper(table_rec->recognize_html(crop, cw, ch, items));
+        t_slanet = ms(_s, Clk::now());
         html = wireless;
         // Route to the UNet (wired) model when the classifier says wired, or wireless with low
         // confidence (<0.9) — then pick the better of wired/wireless. Faithful to batch_analyze.
         if (table_cls && wired_rec && !items.empty()) {
+          auto _c = Clk::now();
           TableClsResult cls = table_cls->classify(crop, cw, ch);
+          t_cls = ms(_c, Clk::now());
           bool wired_candidate = cls.label == "wired_table" ||
                                  (cls.label == "wireless_table" && cls.score < 0.9f);
           if (wired_candidate) {
+            auto _u = Clk::now();
             std::string wired = strip_table_wrapper(wired_rec->recognize_html(crop, cw, ch, items));
+            t_unet = ms(_u, Clk::now());
             html = choose_table_html(wired, wireless, items);
           }
         }
       }
+      if (dbg_tbl)
+        std::fprintf(stderr, "[table-debug] OCR(Metal)=%.0f SLANet(ORT)=%.0f cls=%.0f UNet(Metal)=%.0f ms\n",
+                     t_ocr, t_slanet, t_cls, t_unet);
       d["html"] = html;
       if (times) times->table += ms(_tt, Clk::now());
     }
